@@ -21,7 +21,8 @@ there** — it just forwards bytes. But because it's in the middle, it can:
   ("who told the AI to run `rollback` in prod?").
 - **📼 Record & replay** — turn a live session into a runnable script.
 - **🧱 Extend** — the same seam is where you'd add redaction, policy checks, or
-  approval gates in a real system.
+  approval gates in a real system... or, as `interceptor_tamper.py` demonstrates,
+  where a **malicious** proxy could rewrite calls in flight.
 
 ## Try it in 30 seconds
 
@@ -29,9 +30,10 @@ there** — it just forwards bytes. But because it's in the middle, it can:
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python mcp_client.py            # 1) through the AUDIT interceptor  -> intercept.log
+python mcp_client.py            # 1) through the AUDIT interceptor   -> intercept.log
 python mcp_client.py --modify   # 2) through the RUNBOOK interceptor -> replay_calls.py
-python mcp_client.py --direct   # 3) no interceptor (baseline)
+python mcp_client.py --tamper   # 3) through a MALICIOUS interceptor -> rewrites a call in flight
+python mcp_client.py --direct   # 4) no interceptor (baseline)
 ```
 
 The demo runs a small story so the output is meaningful: an **AI on-call agent**
@@ -98,7 +100,30 @@ does not block or alter the in-flight call). The output path is a fixed filename
 and arguments are written as Python **literals** (via `repr` of JSON-parsed
 values), so intercepted data can't redirect the write or inject code.
 
-### 3) Direct — baseline, no interceptor
+### 3) ⚠️ Tamper interceptor — `interceptor_tamper.py` (what a *malicious* proxy could do)
+
+The honest interceptors above always forward the original bytes. But being in the
+middle means you *could* change them. This one hijacks the `rollback` call and
+silently rewrites the version **before the server sees it** — the client asked for
+`v2.7.0`, the server actually runs `v0.0.1`:
+
+```
+$ python mcp_client.py --tamper
+[tamper] hijacked rollback: version 'v2.7.0' -> 'v0.0.1' (client never asked for this)
+...
+[client] call rollback({'service': 'checkout-api', 'version': 'v2.7.0'}) -> rolled back checkout-api to v0.0.1
+                                                     ▲ client requested this        ▲ server actually did this
+```
+
+Neither the client nor the server can tell — which is exactly the point. A proxy
+in the middle can **modify, redirect, drop, inject, or forge** any message (it
+could rewrite the *response* too, to fully hide the swap). That's why MCP guidance
+calls for **integrity/authenticity** (TLS/mTLS + integrity checks on remote
+transports), treating all wire data as untrusted, and gating high-impact actions
+with **server-side authorization + human-in-the-loop** rather than trusting client
+intent. This file is a security demo only — don't use it as a template.
+
+### 4) Direct — baseline, no interceptor
 
 `python mcp_client.py --direct` wires the client straight to the server so you
 can confirm the interceptors are transparent (identical results, nothing logged).
@@ -119,7 +144,8 @@ python interceptor_modify.py  <server-command> <args...>
 |---|---|
 | `interceptor.py` | **the star:** transparent stdio proxy that **audits** client↔server traffic |
 | `interceptor_modify.py` | active proxy that turns intercepted calls into a **runbook** (`replay_calls.py`) |
-| `mcp_client.py` | the AI on-call agent; picks a mode via a flag (`--modify` / `--direct`) |
+| `interceptor_tamper.py` | ⚠️ malicious-proxy **security demo**: rewrites a `rollback` call in flight |
+| `mcp_client.py` | the AI on-call agent; picks a mode via a flag (`--modify` / `--tamper` / `--direct`) |
 | `mcp_server.py` | MCP server (stdio); incident-ops tools: `get_error_rate`, `rollback`, `scale` |
 | `replay_calls.py` | auto-generated runbook (git-ignored) |
 | `intercept.log` | auto-generated audit trail (git-ignored) |
@@ -142,8 +168,11 @@ CI (GitHub Actions) runs the suite on Python 3.11–3.13 for every push and PR.
 - **Single-purpose tools** with explicit **input validation** (version format,
   replica bounds); no "do anything" tool; least privilege. The remediation
   actions are **simulated** — no real infrastructure is touched.
-- Interceptors are **local audit / codegen** aids: they log or write to a local
-  file with a fixed path and treat wire data as literals (never as code or as a
-  path). In a real deployment, redact sensitive fields before logging and
-  restrict access to `intercept.log` / generated files, per the logging
-  guidelines.
+- The honest interceptors are **local audit / codegen** aids: they log or write
+  to a local file with a fixed path and treat wire data as literals (never as code
+  or as a path). In a real deployment, redact sensitive fields before logging and
+  restrict access to `intercept.log` / generated files, per the logging guidelines.
+- `interceptor_tamper.py` is an intentional **attacker demo** showing why a
+  middlebox must not be trusted for integrity: on remote transports use TLS/mTLS +
+  integrity checks, and enforce high-impact actions with server-side authorization
+  and human-in-the-loop — never on client intent alone.

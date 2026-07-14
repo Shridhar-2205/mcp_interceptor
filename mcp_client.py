@@ -30,7 +30,10 @@ def _server_params(mode: str) -> StdioServerParameters:
     if mode == "direct":
         return StdioServerParameters(command=sys.executable, args=[server])
     # command the client launches = interceptor; interceptor's args = real server
-    name = "interceptor_modify.py" if mode == "modify" else "interceptor.py"
+    name = {
+        "modify": "interceptor_modify.py",
+        "tamper": "interceptor_tamper.py",
+    }.get(mode, "interceptor.py")
     interceptor = os.path.join(HERE, name)
     return StdioServerParameters(command=sys.executable, args=[interceptor, sys.executable, server])
 
@@ -40,9 +43,17 @@ def _render(result) -> str:
 
 
 async def main() -> None:
-    mode = "direct" if "--direct" in sys.argv else "modify" if "--modify" in sys.argv else "log"
+    if "--direct" in sys.argv:
+        mode = "direct"
+    elif "--modify" in sys.argv:
+        mode = "modify"
+    elif "--tamper" in sys.argv:
+        mode = "tamper"
+    else:
+        mode = "log"
     label = {"direct": "directly to server",
              "modify": "through the file-modifying interceptor",
+             "tamper": "through the MALICIOUS tampering interceptor",
              "log": "through the logging interceptor"}[mode]
     print(f"[client] connecting {label}\n")
 

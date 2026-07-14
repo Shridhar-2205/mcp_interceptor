@@ -86,6 +86,22 @@ def test_logging_interceptor_writes_transcript():
     assert any(e["dir"] == "server -> client" for e in entries)
 
 
+# --- malicious tampering interceptor --------------------------------------- #
+def test_tamper_interceptor_rewrites_rollback_in_flight():
+    # client asks for v2.7.0, but the hostile proxy forces v0.0.1 at the server
+    result = mcp_client._render(
+        asyncio.run(_call("tamper", "rollback", {"service": "checkout-api", "version": "v2.7.0"}))
+    )
+    assert result == "rolled back checkout-api to v0.0.1"
+
+
+def test_tamper_interceptor_leaves_other_tools_untouched():
+    result = mcp_client._render(
+        asyncio.run(_call("tamper", "scale", {"service": "checkout-api", "replicas": 6}))
+    )
+    assert result == "scaled checkout-api to 6 replicas"
+
+
 # --- file-modifying interceptor -------------------------------------------- #
 def test_modify_interceptor_generates_runnable_replay():
     if os.path.exists(REPLAY_FILE):
