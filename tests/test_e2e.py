@@ -25,16 +25,22 @@ REPLAY_FILE = os.path.join(LAB_DIR, "replay_calls.py")
 
 
 async def _session_calls(mode: str):
-    """Open a session in the given mode, list tools, run the 3 standard calls."""
+    """Open a session in the given mode, list tools, run the incident playbook."""
     async with stdio_client(mcp_client._server_params(mode)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await session.list_tools()
             names = sorted(t.name for t in tools.tools)
             results = {
-                "add": mcp_client._render(await session.call_tool("add", {"a": 2, "b": 3})),
-                "echo": mcp_client._render(await session.call_tool("echo", {"text": "hi"})),
-                "slug": mcp_client._render(await session.call_tool("slugify", {"text": "On Call L9"})),
+                "error_rate": mcp_client._render(
+                    await session.call_tool("get_error_rate", {"service": "checkout-api"})
+                ),
+                "rollback": mcp_client._render(
+                    await session.call_tool("rollback", {"service": "checkout-api", "version": "v2.7.0"})
+                ),
+                "scale": mcp_client._render(
+                    await session.call_tool("scale", {"service": "checkout-api", "replicas": 6})
+                ),
             }
             return names, results
 
@@ -49,14 +55,14 @@ async def _call(mode: str, name: str, args: dict):
 # --- tools / direct -------------------------------------------------------- #
 def test_direct_lists_and_calls_tools():
     names, results = asyncio.run(_session_calls("direct"))
-    assert names == ["add", "echo", "slugify"]
-    assert results["add"] == "5"
-    assert results["echo"] == "hi"
-    assert results["slug"] == "on-call-l9"
+    assert names == ["get_error_rate", "rollback", "scale"]
+    assert results["error_rate"] == "9.2"
+    assert results["rollback"] == "rolled back checkout-api to v2.7.0"
+    assert results["scale"] == "scaled checkout-api to 6 replicas"
 
 
-def test_echo_length_validation_errors():
-    result = asyncio.run(_call("direct", "echo", {"text": "x" * 600}))
+def test_rollback_version_validation_errors():
+    result = asyncio.run(_call("direct", "rollback", {"service": "checkout-api", "version": "latest"}))
     assert result.isError is True
 
 
@@ -65,17 +71,17 @@ def test_logging_interceptor_writes_transcript():
     if os.path.exists(INTERCEPT_LOG):
         os.remove(INTERCEPT_LOG)
     names, results = asyncio.run(_session_calls("log"))
-    assert results["add"] == "5"
+    assert results["error_rate"] == "9.2"
     assert os.path.exists(INTERCEPT_LOG)
 
     # each log line is {ts, dir, raw}; raw is the actual JSON-RPC message string
     entries = [json.loads(line) for line in open(INTERCEPT_LOG, encoding="utf-8") if line.strip()]
     messages = [json.loads(e["raw"]) for e in entries]
-    add_calls = [
+    rollback_calls = [
         m for m in messages
-        if m.get("method") == "tools/call" and m.get("params", {}).get("name") == "add"
+        if m.get("method") == "tools/call" and m.get("params", {}).get("name") == "rollback"
     ]
-    assert add_calls, "logging interceptor did not capture the add tools/call"
+    assert rollback_calls, "logging interceptor did not audit the rollback tools/call"
     assert any(e["dir"] == "client -> server" for e in entries)
     assert any(e["dir"] == "server -> client" for e in entries)
 
@@ -85,20 +91,20 @@ def test_modify_interceptor_generates_runnable_replay():
     if os.path.exists(REPLAY_FILE):
         os.remove(REPLAY_FILE)
     names, results = asyncio.run(_session_calls("modify"))
-    assert results["slug"] == "on-call-l9"
+    assert results["scale"] == "scaled checkout-api to 6 replicas"
 
-    # the interceptor must have written a valid, runnable replay file
+    # the interceptor must have captured the incident as a valid, runnable runbook
     assert os.path.exists(REPLAY_FILE)
     src = open(REPLAY_FILE, encoding="utf-8").read()
     compile(src, REPLAY_FILE, "exec")  # raises SyntaxError if not valid Python
-    assert "('add', {'a': 2, 'b': 3})" in src
-    assert "('slugify', {'text': 'On Call L9'})" in src
+    assert "('get_error_rate', {'service': 'checkout-api'})" in src
+    assert "('rollback', {'service': 'checkout-api', 'version': 'v2.7.0'})" in src
 
-    # and running it should replay the calls against the server
+    # and running it should replay the remediation against the server
     proc = subprocess.run(
         [sys.executable, REPLAY_FILE],
         cwd=LAB_DIR, capture_output=True, text=True, timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "replay add({'a': 2, 'b': 3}) -> 5" in proc.stdout
-    assert "-> on-call-l9" in proc.stdout
+    assert "replay rollback({'service': 'checkout-api', 'version': 'v2.7.0'}) -> rolled back checkout-api to v2.7.0" in proc.stdout
+    assert "-> scaled checkout-api to 6 replicas" in proc.stdout

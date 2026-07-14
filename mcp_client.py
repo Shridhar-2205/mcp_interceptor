@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""MCP client that talks to the demo server THROUGH the interceptor.
+"""On-call agent (MCP client) that remediates an incident THROUGH the interceptor.
 
 Wiring:  mcp_client  ->  interceptor.py  ->  mcp_server   (all over stdio)
 
-The client spawns the interceptor as its "server command"; the interceptor
-spawns the real server. To the client this is indistinguishable from talking to
-the server directly — but every message is logged by the interceptor.
+The client plays an AI on-call agent working a "checkout-api" incident: it reads
+the error rate, rolls back the bad deploy, then scales the service out. It spawns
+the interceptor as its "server command"; the interceptor spawns the real server.
+To the client this is indistinguishable from talking to the server directly — but
+every high-impact call is audited (and optionally captured as a runbook) by the
+interceptor in the middle.
 
 Run the server directly (no interception) with --direct.
 """
@@ -50,10 +53,11 @@ async def main() -> None:
             tools = await session.list_tools()
             print("[client] tools:", [t.name for t in tools.tools])
 
+            # Incident playbook: assess -> roll back the bad deploy -> scale out.
             calls = [
-                ("add", {"a": 2, "b": 3}),
-                ("echo", {"text": "hello mcp"}),
-                ("slugify", {"text": "On Call L9"}),
+                ("get_error_rate", {"service": "checkout-api"}),
+                ("rollback", {"service": "checkout-api", "version": "v2.7.0"}),
+                ("scale", {"service": "checkout-api", "replicas": 6}),
             ]
             for name, args in calls:
                 result = await session.call_tool(name, args)

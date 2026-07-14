@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Minimal MCP server (stdio transport) exposing a few safe, single-purpose tools.
+"""Incident-remediation MCP server (stdio transport).
+
+Use case: an AI **on-call agent** drives a small set of production remediation
+tools over MCP during an incident — read a service's error rate, roll a bad
+deploy back, and scale a service out. These are exactly the kind of *high-impact*
+actions you want an **interceptor** in front of: to audit every call, and to
+capture the sequence as a re-runnable runbook.
 
 Security posture (see MCP security guidelines):
 - **stdio transport** for local use — pipe-based, so there is no network
   listener and no DNS-rebinding surface.
-- Each tool is **single-purpose** with explicit input validation / length caps
-  (no "do anything" tool, least privilege).
+- Each tool is **single-purpose** with explicit input validation (no "do
+  anything" tool, least privilege), and the "actions" are simulated — no real
+  infra is touched.
 - No secrets, no filesystem/network side effects.
 """
 
@@ -15,31 +22,39 @@ import re
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("demo-tools")
+mcp = FastMCP("incident-ops")
 
-MAX_TEXT = 500
+# Simulated live error rates (%). A real server would query your metrics backend.
+_ERROR_RATES = {
+    "checkout-api": 9.2,
+    "payments-api": 0.4,
+    "search-api": 1.1,
+}
 
-
-@mcp.tool()
-def add(a: int, b: int) -> int:
-    """Add two integers and return the sum."""
-    return a + b
-
-
-@mcp.tool()
-def echo(text: str) -> str:
-    """Echo the given text back unchanged (max 500 chars)."""
-    if len(text) > MAX_TEXT:
-        raise ValueError(f"text too long (max {MAX_TEXT})")
-    return text
+MAX_REPLICAS = 100
+_VERSION_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
 
 @mcp.tool()
-def slugify(text: str) -> str:
-    """Convert text into a lowercase URL-safe slug (max 200 chars)."""
-    if len(text) > 200:
-        raise ValueError("text too long (max 200)")
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+def get_error_rate(service: str) -> float:
+    """Return the current error rate (%) for a service."""
+    return _ERROR_RATES.get(service, 0.0)
+
+
+@mcp.tool()
+def rollback(service: str, version: str) -> str:
+    """Roll a service back to a previous semantic version (e.g. v2.7.0)."""
+    if not _VERSION_RE.match(version):
+        raise ValueError("version must look like v<major>.<minor>.<patch>, e.g. v2.7.0")
+    return f"rolled back {service} to {version}"
+
+
+@mcp.tool()
+def scale(service: str, replicas: int) -> str:
+    """Scale a service to a target replica count (0-100)."""
+    if not 0 <= replicas <= MAX_REPLICAS:
+        raise ValueError(f"replicas must be between 0 and {MAX_REPLICAS}")
+    return f"scaled {service} to {replicas} replicas"
 
 
 if __name__ == "__main__":
