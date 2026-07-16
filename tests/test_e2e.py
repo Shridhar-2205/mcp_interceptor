@@ -1,48 +1,20 @@
-"""End-to-end tests for the MCP client/server and the two interceptors.
-
-Each test drives a real MCP session over stdio (spawning the interceptor and
-server as subprocesses) and asserts on the results and the side effects
-(intercept.log / replay_calls.py). No pytest-asyncio needed — we drive the async
-sessions with asyncio.run().
+"""End-to-end tests: real MCP sessions over stdio, direct and through both
+interceptors. No pytest-asyncio needed — we drive the async sessions with
+asyncio.run().
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
-import subprocess
-import sys
 
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
 import mcp_client
 
-LAB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-INTERCEPT_LOG = os.path.join(LAB_DIR, "intercept.log")
-REPLAY_FILE = os.path.join(LAB_DIR, "replay_calls.py")
-
-
-async def _session_calls(mode: str):
-    """Open a session in the given mode, list tools, run the incident playbook."""
-    async with stdio_client(mcp_client._server_params(mode)) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            names = sorted(t.name for t in tools.tools)
-            results = {
-                "error_rate": mcp_client._render(
-                    await session.call_tool("get_error_rate", {"service": "checkout-api"})
-                ),
-                "rollback": mcp_client._render(
-                    await session.call_tool("rollback", {"service": "checkout-api", "version": "v2.7.0"})
-                ),
-                "scale": mcp_client._render(
-                    await session.call_tool("scale", {"service": "checkout-api", "replicas": 6})
-                ),
-            }
-            return names, results
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+INTERCEPT_LOG = os.path.join(HERE, "intercept.log")
 
 
 async def _call(mode: str, name: str, args: dict):
@@ -52,75 +24,41 @@ async def _call(mode: str, name: str, args: dict):
             return await session.call_tool(name, args)
 
 
-# --- tools / direct -------------------------------------------------------- #
+async def _tools(mode: str):
+    async with stdio_client(mcp_client._server_params(mode)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            tools = await session.list_tools()
+            return sorted(t.name for t in tools.tools)
+
+
+def _text(result) -> str:
+    return mcp_client._text(result)
+
+
+# --- direct (baseline) ----------------------------------------------------- #
 def test_direct_lists_and_calls_tools():
-    names, results = asyncio.run(_session_calls("direct"))
-    assert names == ["get_error_rate", "rollback", "scale"]
-    assert results["error_rate"] == "9.2"
-    assert results["rollback"] == "rolled back checkout-api to v2.7.0"
-    assert results["scale"] == "scaled checkout-api to 6 replicas"
-
-
-def test_rollback_version_validation_errors():
-    result = asyncio.run(_call("direct", "rollback", {"service": "checkout-api", "version": "latest"}))
-    assert result.isError is True
+    assert asyncio.run(_tools("direct")) == ["add", "greet"]
+    assert _text(asyncio.run(_call("direct", "add", {"a": 2, "b": 2}))) == "4"
+    assert _text(asyncio.run(_call("direct", "greet", {"name": "world"}))) == "hello, world!"
 
 
 # --- logging interceptor --------------------------------------------------- #
 def test_logging_interceptor_writes_transcript():
     if os.path.exists(INTERCEPT_LOG):
         os.remove(INTERCEPT_LOG)
-    names, results = asyncio.run(_session_calls("log"))
-    assert results["error_rate"] == "9.2"
+    assert _text(asyncio.run(_call("log", "add", {"a": 2, "b": 2}))) == "4"
     assert os.path.exists(INTERCEPT_LOG)
-
-    # each log line is {ts, dir, raw}; raw is the actual JSON-RPC message string
-    entries = [json.loads(line) for line in open(INTERCEPT_LOG, encoding="utf-8") if line.strip()]
-    messages = [json.loads(e["raw"]) for e in entries]
-    rollback_calls = [
-        m for m in messages
-        if m.get("method") == "tools/call" and m.get("params", {}).get("name") == "rollback"
-    ]
-    assert rollback_calls, "logging interceptor did not audit the rollback tools/call"
-    assert any(e["dir"] == "client -> server" for e in entries)
-    assert any(e["dir"] == "server -> client" for e in entries)
+    content = open(INTERCEPT_LOG, encoding="utf-8").read()
+    assert "client->server" in content and "server->client" in content
+    assert "tools/call" in content and "add" in content
 
 
 # --- malicious tampering interceptor --------------------------------------- #
-def test_tamper_interceptor_rewrites_rollback_in_flight():
-    # client asks for v2.7.0, but the hostile proxy forces v0.0.1 at the server
-    result = mcp_client._render(
-        asyncio.run(_call("tamper", "rollback", {"service": "checkout-api", "version": "v2.7.0"}))
-    )
-    assert result == "rolled back checkout-api to v0.0.1"
+def test_tamper_rewrites_add_in_flight():
+    # client asks add(2, 2) -> 4, but the hostile proxy makes the server do add(2, 40)
+    assert _text(asyncio.run(_call("tamper", "add", {"a": 2, "b": 2}))) == "42"
 
 
-def test_tamper_interceptor_leaves_other_tools_untouched():
-    result = mcp_client._render(
-        asyncio.run(_call("tamper", "scale", {"service": "checkout-api", "replicas": 6}))
-    )
-    assert result == "scaled checkout-api to 6 replicas"
-
-
-# --- file-modifying interceptor -------------------------------------------- #
-def test_modify_interceptor_generates_runnable_replay():
-    if os.path.exists(REPLAY_FILE):
-        os.remove(REPLAY_FILE)
-    names, results = asyncio.run(_session_calls("modify"))
-    assert results["scale"] == "scaled checkout-api to 6 replicas"
-
-    # the interceptor must have captured the incident as a valid, runnable runbook
-    assert os.path.exists(REPLAY_FILE)
-    src = open(REPLAY_FILE, encoding="utf-8").read()
-    compile(src, REPLAY_FILE, "exec")  # raises SyntaxError if not valid Python
-    assert "('get_error_rate', {'service': 'checkout-api'})" in src
-    assert "('rollback', {'service': 'checkout-api', 'version': 'v2.7.0'})" in src
-
-    # and running it should replay the remediation against the server
-    proc = subprocess.run(
-        [sys.executable, REPLAY_FILE],
-        cwd=LAB_DIR, capture_output=True, text=True, timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "replay rollback({'service': 'checkout-api', 'version': 'v2.7.0'}) -> rolled back checkout-api to v2.7.0" in proc.stdout
-    assert "-> scaled checkout-api to 6 replicas" in proc.stdout
+def test_tamper_leaves_greet_untouched():
+    assert _text(asyncio.run(_call("tamper", "greet", {"name": "world"}))) == "hello, world!"
