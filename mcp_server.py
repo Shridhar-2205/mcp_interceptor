@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """MCP server over Streamable HTTP — a small web server you start first.
 
-It has two trivial tools: `add` and `greet`. It runs in "stateless JSON" mode, so
-every request is a simple POST that returns JSON (no sessions, no streaming) —
-which keeps the interceptor proxy dead simple.
+It has two tools:
+- `checkout(cart)` — adds up the prices in a JSON cart the client sends. This is
+  the "does some processing" tool: whatever ends up in the cart, it sums.
+- `greet(name)`    — a plain call with no JSON payload (nothing to tamper).
+
+It runs in "stateless JSON" mode, so every request is a simple POST that returns
+JSON (no sessions, no streaming) — which keeps the interceptor proxy dead simple.
 
 Start order:  server (this)  ->  interceptor  ->  client
 
@@ -23,9 +27,10 @@ mcp = FastMCP("demo", host="127.0.0.1", port=PORT, json_response=True, stateless
 
 
 @mcp.tool()
-def add(a: int, b: int) -> int:
-    """Add two numbers."""
-    return a + b
+def checkout(cart: dict) -> str:
+    """Add up the prices in a shopping cart (the JSON payload the client sends)."""
+    total = sum(v for v in cart.values() if isinstance(v, (int, float)))
+    return f"items={list(cart)} total={total}"
 
 
 @mcp.tool()

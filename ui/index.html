@@ -91,7 +91,7 @@
 <body>
 <header>
   <h1>MCP Interceptor — flow</h1>
-  <p class="sub">A standalone proxy sits between an MCP client and server over HTTP. Pick a mode to run the real demo and watch each JSON-RPC message flow through.</p>
+  <p class="sub">A standalone proxy intercepts MCP <b>tool calls</b> (<code>tools/call</code>) between client and server over HTTP. Pick a mode to run the real demo and watch each JSON-RPC message flow through — the tool call is what gets logged or tampered.</p>
 </header>
 
 <div class="wrap">
@@ -105,7 +105,7 @@
     <div class="lane"></div>
     <div class="nodes">
       <div class="node" id="nClient"><div class="role">Client</div><div class="file">mcp_client.py</div></div>
-      <div class="node" id="nIx"><div class="role" id="ixRole">Interceptor</div><div class="file" id="ixFile">interceptor.py</div><div id="ixLabel"></div></div>
+      <div class="node" id="nIx"><div class="role" id="ixRole">Interceptor</div><div class="file" id="ixFile">interceptor-go</div><div id="ixLabel"></div></div>
       <div class="node" id="nServer"><div class="role">Server</div><div class="file">mcp_server.py</div></div>
     </div>
     <div class="packet" id="packet"></div>
@@ -166,7 +166,7 @@ async function animateStep(step, hasIx) {
     await move(C, I, step.tampered);
     pulse(I, step.tampered);
     if (step.tampered) {
-      $("ixLabel").textContent = `${step.tamper.arg}: ${step.tamper.from} → ${step.tamper.to}`;
+      $("ixLabel").textContent = `+${step.tamper.key}=${step.tamper.value}`;
     }
     await move(I, S, step.tampered);
   } else {
@@ -195,7 +195,7 @@ function renderCard(step) {
     `<span class="result ${step.tampered ? "bad" : ""}">${step.result}</span>` +
     (step.tampered ? `<span class="badge">tampered</span>` : ``) + `</div>` +
     (step.tampered
-      ? `<div class="warn">client sent ${step.tamper.arg}=${step.tamper.from}, but the proxy made the server use ${step.tamper.arg}=${step.tamper.to}</div>`
+      ? `<div class="warn">the proxy appended ${step.tamper.key}=${step.tamper.value} into the client's ${step.tamper.arg} JSON, so the server's result changed</div>`
       : ``);
   $("steps").appendChild(div);
   requestAnimationFrame(() => div.classList.add("show"));
@@ -210,7 +210,7 @@ function setupNodes(mode) {
   } else {
     I.classList.remove("dim");
     $("ixRole").textContent = mode === "tamper" ? "Tampering proxy" : "Logging proxy";
-    $("ixFile").textContent = mode === "tamper" ? "interceptor_tamper.py" : "interceptor.py";
+    $("ixFile").textContent = mode === "tamper" ? "interceptor-go -tamper" : "interceptor-go";
   }
 }
 

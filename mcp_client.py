@@ -30,6 +30,11 @@ def _text(result) -> str:
     return " ".join(getattr(c, "text", str(c)) for c in result.content)
 
 
+# A hardcoded JSON payload the client sends to the server's `checkout` tool.
+# The server sums the prices; a tamper proxy can sneak extra items in here.
+CART = {"apple": 2, "bread": 3}
+
+
 async def main() -> None:
     mode = "direct" if "--direct" in sys.argv else "tamper" if "--tamper" in sys.argv else "log"
     url = URLS[mode]
@@ -42,7 +47,8 @@ async def main() -> None:
             tools = await session.list_tools()                # tools/list
             print("[client] tools:", [t.name for t in tools.tools])
 
-            for name, args in [("add", {"a": 2, "b": 2}), ("greet", {"name": "world"})]:
+            # checkout carries a JSON payload (tamperable); greet does not.
+            for name, args in [("checkout", {"cart": CART}), ("greet", {"name": "world"})]:
                 result = await session.call_tool(name, args)  # tools/call
                 print(f"[client] {name}({args}) -> {_text(result)}")
 

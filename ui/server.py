@@ -38,7 +38,7 @@ MODE_FLAG = {"log": [], "tamper": ["--tamper"], "direct": ["--direct"]}
 
 _CALL_RE = re.compile(r"\[client\] (\w+)\((.*)\) -> (.*)")
 _TOOLS_RE = re.compile(r"\[client\] tools: (\[.*\])")
-_TAMPER_RE = re.compile(r"\[tamper\] (\w+): (\w+) (.+?) -> (.+?) \(in flight\)")
+_TAMPER_RE = re.compile(r"\[tamper\] (\w+): appended (\S+)=(\S+) into (\w+) \(in flight\)")
 
 
 class Service:
@@ -138,8 +138,8 @@ def run_mode(mode: str) -> dict:
     interceptor_lines = interceptor.since(mark) if interceptor else []
     tampered = {}
     for tm in _TAMPER_RE.finditer("\n".join(interceptor_lines)):
-        tool, arg, frm, to = tm.groups()
-        tampered[tool] = {"arg": arg, "from": frm, "to": to}
+        tool, key, value, arg = tm.groups()
+        tampered[tool] = {"key": key, "value": value, "arg": arg}
 
     steps = []
     for cm in _CALL_RE.finditer(stdout):

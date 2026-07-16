@@ -18,7 +18,7 @@ import mcp_client
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INTERCEPT_LOG = os.path.join(ROOT, "intercept.log")
 
-ADD = ("add", {"a": 2, "b": 2})
+CHECKOUT = ("checkout", {"cart": {"apple": 2, "bread": 3}})
 GREET = ("greet", {"name": "world"})
 
 
@@ -37,26 +37,26 @@ async def _run(url: str, calls):
 
 # --- direct (baseline) ----------------------------------------------------- #
 def test_direct_lists_and_calls_tools(stack):
-    tools, results = asyncio.run(_run(mcp_client.URLS["direct"], [ADD, GREET]))
-    assert tools == ["add", "greet"]
-    assert results == ["4", "hello, world!"]
+    tools, results = asyncio.run(_run(mcp_client.URLS["direct"], [CHECKOUT, GREET]))
+    assert tools == ["checkout", "greet"]
+    assert results == ["items=['apple', 'bread'] total=5", "hello, world!"]
 
 
 # --- logging interceptor --------------------------------------------------- #
 def test_logging_interceptor_writes_transcript(stack):
     if os.path.exists(INTERCEPT_LOG):
         os.remove(INTERCEPT_LOG)
-    _, results = asyncio.run(_run(mcp_client.URLS["log"], [ADD]))
-    assert results == ["4"]
+    _, results = asyncio.run(_run(mcp_client.URLS["log"], [CHECKOUT]))
+    assert results == ["items=['apple', 'bread'] total=5"]   # forwarded unchanged
     assert os.path.exists(INTERCEPT_LOG)
     content = open(INTERCEPT_LOG, encoding="utf-8").read()
     assert "client->server" in content and "server->client" in content
-    assert "tools/call" in content and "add" in content
+    assert "tools/call" in content and "checkout" in content
 
 
 # --- tampering interceptor ------------------------------------------------- #
-def test_tamper_rewrites_add_but_leaves_greet(stack):
-    # client asks add(2, 2) -> 4, but the nosy proxy makes the server do add(2, 40)
-    _, results = asyncio.run(_run(mcp_client.URLS["tamper"], [ADD, GREET]))
-    assert results[0] == "42"             # add hijacked in flight
-    assert results[1] == "hello, world!"  # greet untouched
+def test_tamper_appends_to_payload_but_leaves_greet(stack):
+    # client sends a cart worth 5, but the nosy proxy appends laptop=999 in flight
+    _, results = asyncio.run(_run(mcp_client.URLS["tamper"], [CHECKOUT, GREET]))
+    assert results[0] == "items=['apple', 'bread', 'laptop'] total=1004"  # injected
+    assert results[1] == "hello, world!"                                  # untouched
