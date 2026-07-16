@@ -5,6 +5,10 @@ or **change** — every tool call. This is the smallest possible demo of that, u
 MCP's **Streamable HTTP** transport so the interceptor is a **standalone server you
 start first**.
 
+The client and server are **Python**; the interceptor is a dependency-free **Go**
+program. They interoperate because MCP is just JSON-RPC over HTTP — nobody cares
+what language the other side is written in.
+
 ```mermaid
 flowchart LR
     C["MCP client<br/>mcp_client.py"]
@@ -242,9 +246,10 @@ pip install -r requirements.txt
 pytest -q
 ```
 
-The test fixture starts the server and both interceptors **first**, then connects
-the client — the same start order as above. CI runs the suite on Python 3.11–3.13
-for every push and PR.
+The test fixture builds the Go interceptor, then starts the server and both
+interceptors **first**, before connecting the client — the same start order as
+above (so a **Go toolchain** is required). CI sets up Go and runs the suite on
+Python 3.11–3.13 for every push and PR.
 
 ## MCP docs used to build this
 
@@ -254,3 +259,6 @@ for every push and PR.
 - **Streamable HTTP transport** (the JSON-RPC-over-HTTP framing the interceptor relies on):
   https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
 - **Python SDK source**: https://github.com/modelcontextprotocol/python-sdk
+
+The interceptor itself uses **no MCP SDK** — just Go's standard library
+(`net/http`, `encoding/json`), because it only relays JSON-RPC over HTTP.
