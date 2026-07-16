@@ -1,170 +1,55 @@
 # MCP Interceptor
 
-Put a proxy between an **MCP client** and an **MCP server** and you can **see** —
-or **change** — every tool call. This is the smallest possible demo of that, using
-MCP's **Streamable HTTP** transport so the interceptor is a **standalone server you
-start first**.
-
-The client and server are **Python**; the interceptor is a dependency-free **Go**
-program. They interoperate because MCP is just JSON-RPC over HTTP — nobody cares
-what language the other side is written in.
+Sit a proxy between an MCP client and server and you can watch — or rewrite —
+every tool call. The client and server are Python; the interceptor is a
+dependency-free Go program. They talk over MCP's Streamable HTTP transport
+(JSON-RPC over HTTP), so neither end cares what language the other is written in.
 
 ```mermaid
 flowchart LR
-    C["MCP client<br/>mcp_client.py"]
-    L["interceptor-go :8000<br/>logs every message"]
+    C["client<br/>mcp_client.py"]
+    L["interceptor-go :8000<br/>logs"]
     T["interceptor-go -tamper :8001<br/>rewrites add()"]
-    S["MCP server<br/>mcp_server.py :8100<br/>tools: add, greet"]
+    S["server<br/>mcp_server.py :8100<br/>add, greet"]
 
-    C -->|"HTTP POST /mcp (JSON-RPC)"| L
+    C -->|"POST /mcp (JSON-RPC)"| L
     C -.->|"--tamper"| T
-    L -->|"forward"| S
-    T -->|"forward (changed)"| S
-    S -->|"reply"| L
-    S -->|"reply"| T
+    L --> S
+    T -->|"changed"| S
+    S --> L
+    S --> T
 ```
 
-The client just points at a URL; the server is plain MCP. Neither knows the
-interceptor is there — it forwards the JSON-RPC over HTTP.
+Three independent processes, each on its own port. The client connects to
+whichever URL you point it at, so `--direct` skips the proxy entirely.
 
-## MCP in a nutshell (and where the interceptor fits)
+## Quick start
 
-**MCP (Model Context Protocol)** is a standard way for an app to give an AI model
-access to *tools* (functions it can call), plus resources and prompts. It has
-three roles:
-
-| Role | Who it is here | What it does |
-|---|---|---|
-| **Host** | (the app / LLM) | wants to use tools |
-| **Client** | `mcp_client.py` | opens a connection and speaks MCP for the host |
-| **Server** | `mcp_server.py` | exposes tools (`add`, `greet`) and runs them |
-
-**The messages are JSON-RPC 2.0.** Every request looks like
-`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{…}}` and every reply
-carries the same `id` back with a `result`. The methods you'll see:
-
-| MCP message | Meaning |
-|---|---|
-| `initialize` | client & server say hello and swap **capabilities** (the handshake) |
-| `notifications/initialized` | client: "handshake done, I'm ready" (a notification = no reply) |
-| `tools/list` | "what tools do you have?" → returns each tool's name + input schema |
-| `tools/call` | "run this tool with these arguments" → returns the result content |
-
-**A transport carries those JSON-RPC bytes.** MCP defines two:
-
-- **stdio** — the client *spawns* the server as a subprocess and talks over its
-  stdin/stdout. Local, 1:1, nothing to connect to.
-- **Streamable HTTP** — the server is a real listener; the client `POST`s JSON-RPC
-  to a URL. This is what lets the interceptor be a **standalone server you start
-  first** (see [why](#why-streamable-http-not-stdio)).
-
-**The interceptor sits on the transport.** Because MCP is just JSON-RPC messages
-on a pipe/socket, a proxy in the middle sees every message in the clear — so it
-can **log** them (default) or **change** them (`-tamper`) without the client or
-server knowing. That's the whole idea of this repo. The interceptor is written in
-**Go** (no dependencies) — but since it only moves JSON over HTTP, it happily sits
-between the Python client and server.
-
-## Start order (this is the point)
-
-Each piece is its own listener, so you bring them up **in order**, then run the
-client:
-
-```
-1. server        (:8100)   →   2. interceptor (:8000/:8001)   →   3. client
-```
-
-## Message flow (MCP)
-
-Every mode speaks the same MCP conversation — the interceptor just relays it. A
-full run is: handshake → discover tools → call tools.
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant P as Interceptor (:8000)
-    participant S as Server (:8100)
-
-    Note over C,S: 1) Handshake
-    C->>P: initialize
-    P->>S: initialize
-    S-->>P: capabilities
-    P-->>C: capabilities
-    C->>P: notifications/initialized
-    P->>S: notifications/initialized
-
-    Note over C,S: 2) Discover tools
-    C->>P: tools/list
-    P->>S: tools/list
-    S-->>P: [add, greet]
-    P-->>C: [add, greet]
-
-    Note over C,S: 3) Call tools
-    C->>P: tools/call add(a=2, b=2)
-    P->>S: tools/call add(a=2, b=2)
-    S-->>P: 4
-    P-->>C: 4
-    C->>P: tools/call greet(name="world")
-    P->>S: tools/call greet(name="world")
-    S-->>P: "hello, world!"
-    P-->>C: "hello, world!"
-```
-
-With the tampering proxy, one message is rewritten in flight and neither side notices:
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant P as Tamper proxy (:8001)
-    participant S as Server (:8100)
-
-    C->>P: tools/call add(a=2, b=2)
-    Note right of P: rewrites b: 2 → 40
-    P->>S: tools/call add(a=2, b=40)
-    S-->>P: 42
-    P-->>C: 42
-    Note over C,S: client asked for 4, got 42
-```
-
-## Run it
-
-Needs **Python** (client + server) and a **Go toolchain** (the interceptor) — or
-skip both and use [Docker](#docker-easiest).
+With Docker (no Python or Go needed):
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+docker compose up --build          # open http://localhost:8080
+```
+
+Or run the pieces yourself (needs Python + Go), each in its own terminal:
+
+```bash
 pip install -r requirements.txt
 
-# 1) start the server (leave it running)
-python mcp_server.py
-
-# 2) start the Go interceptor (new terminal, leave it running)
-cd interceptor-go
-go run .                         # LOGGING   on :8000 -> intercept.log
-go run . -tamper                 # TAMPERING on :8001 (run instead / as well)
-
-# 3) run the client (new terminal)
-python mcp_client.py             # -> logging interceptor  (:8000)
-python mcp_client.py --tamper    # -> tampering interceptor (:8001)
-python mcp_client.py --direct    # -> server directly       (:8100, no interceptor)
+python mcp_server.py                       # 1) server        :8100
+cd interceptor-go && go run .              # 2) interceptor   :8000  (or: go run . -tamper)
+python mcp_client.py                       # 3) client -> interceptor
 ```
 
-**Each piece is fully independent** — separate processes on their own ports, in
-any language. Start or stop any of them on their own: run the server alone and hit
-it with `--direct` (no interceptor needed), or restart the interceptor without
-touching the server. The Go interceptor can also be built once and run as a plain
-binary instead of `go run`:
+The client picks a target by flag:
 
 ```bash
-cd interceptor-go && go build -o interceptor .
-PORT=8000 ./interceptor            # logging
-PORT=8001 ./interceptor -tamper    # tampering
-# override the upstream too, e.g. a server on another host/port:
-UPSTREAM=http://127.0.0.1:8100/mcp ./interceptor
+python mcp_client.py            # logging interceptor  (:8000)
+python mcp_client.py --tamper   # tampering interceptor (:8001)
+python mcp_client.py --direct   # straight to the server (:8100)
 ```
 
-The server has two trivial tools, `add` and `greet`. Every mode makes the same
-two calls:
+Every mode makes the same two calls:
 
 ```
 [client] tools: ['add', 'greet']
@@ -172,127 +57,72 @@ two calls:
 [client] greet({'name': 'world'}) -> hello, world!
 ```
 
-## Why it's this simple
+## The two modes
 
-The server runs Streamable HTTP in **stateless JSON** mode, so each request is a
-plain `POST /mcp` whose body is one JSON-RPC message and whose response is one
-JSON-RPC message. An interceptor is therefore just a tiny HTTP proxy: read the
-POST body (log or edit it), forward it upstream, return the response. The Go
-version does this with only the standard library (`net/http`, `encoding/json`).
+**Logging** (default) forwards everything unchanged and records it to `intercept.log`:
 
-## Why Streamable HTTP, not stdio
+```
+[log] client->server: {"method":"tools/call","params":{"name":"add",...}}
+[log] server->client: {"result":{"content":[{"type":"text","text":"4"}]}}
+```
 
-Both are official MCP transports, but only one lets the interceptor be a
-**standalone server you start first**:
+**Tamper** (`-tamper`) rewrites `add`'s second argument in flight — the client asks
+`add(2, 2)` but the server runs `add(2, 40)`:
 
-| | stdio | Streamable HTTP (used here) |
-|---|---|---|
-| Who starts whom | client **spawns** the server | each piece is its **own** server |
-| Start interceptor first | not possible (it's a child process) | yes — it listens on a port |
-| How the client targets it | a command to run | a **URL** (`http://…:8000/mcp`) |
-| Lifetime | dies with the parent | independent start/stop |
-| Multiple clients | no | yes |
+```
+[tamper] add: b 2 -> 40 (in flight)
+[client] add({'a': 2, 'b': 2}) -> 42      # asked for 4, got 42
+```
 
-With stdio the proxy can only exist *because the client launched it*, so "run the
-interceptor first, then the client" is impossible. HTTP gives each piece an
-address, so you start the server, then the interceptor, then point the client at
+Neither side notices. A proxy in the middle can change anything, so only run one
+you trust, and let the server — not the client — decide what's allowed. (Tamper is
+a demo; don't reuse it.)
+
+## Web UI
+
+```bash
+python ui/server.py               # open http://127.0.0.1:8080
+```
+
+Brings up the whole stack and animates each JSON-RPC message through the proxy;
+tamper mode highlights the `add(2,2) -> 42` hijack. Docker does the same thing.
+
+## How it works
+
+MCP is JSON-RPC 2.0 messages — `initialize`, `tools/list`, `tools/call` — carried
+over a transport. This uses Streamable HTTP in stateless-JSON mode, so each message
+is a single `POST /mcp` with a JSON body and a JSON reply. That makes the
+interceptor trivial: read the body, log or edit it, forward it, return the reply —
+all with Go's standard library (`net/http`, `encoding/json`).
+
+Why HTTP and not stdio? Over stdio the client *spawns* the server, so there's
+nothing to connect to and no way to start the interceptor first. HTTP gives each
+piece an address: start the server, then the interceptor, then point the client at
 the interceptor's URL.
 
-### Logging interceptor — `interceptor-go` (default)
+## Layout
 
-Logs each message and forwards it unchanged (full transcript in `intercept.log`):
-
-```
-[log] client->server: {"method":"tools/call","params":{"name":"add","arguments":{"a":2,"b":2}},...}
-[log] server->client: {"result":{"content":[{"type":"text","text":"4"}],...}}
-```
-
-### ⚠️ Tamper interceptor — `interceptor-go -tamper` (security demo)
-
-Does **not** forward the request unchanged — it rewrites `add`'s second argument
-in flight, so the client asks `add(2, 2)` but the server actually runs `add(2, 40)`:
-
-```
-$ python mcp_client.py --tamper
-[tamper] add: b 2 -> 40 (in flight)
-[client] add({'a': 2, 'b': 2}) -> 42       ◀── client asked for 4, got 42
-```
-
-Neither side can tell. Anything in the middle can rewrite, drop, or inject
-messages — so only run a proxy you actually trust, and let the **server** decide
-what actions are really allowed. (Demo only — don't reuse this mode.)
-
-## See the flow (web UI)
-
-A tiny web UI **starts the whole stack for you** (server + both interceptors),
-then runs the existing `mcp_client.py` against the mode you pick and animates the
-client → interceptor → server flow. It doesn't change the demo code.
-
-```bash
-python ui/server.py        # brings up the stack, then serves the UI
-# open http://127.0.0.1:8080  and pick a mode
-```
-
-Pick **Logging**, **Tamper**, or **Direct** and watch each JSON-RPC message travel
-through the proxy; the tamper mode highlights the `add(2,2) -> 42` hijack in red.
-
-## Docker (easiest)
-
-One self-contained image runs the whole demo — the UI starts the server and both
-interceptors inside the container, so you don't need Python or Go installed. The
-Go interceptor is prebuilt in a build stage, so the runtime image is Python-only.
-
-```bash
-docker compose up --build          # then open http://localhost:8080
-```
-
-Other handy commands:
-
-```bash
-docker compose run --rm ui pytest -q                    # run the test suite
-docker compose exec ui python mcp_client.py --tamper    # CLI, while the UI is up
-docker compose down                                     # stop everything
-```
-
-## Trust model
-
-You run the interceptor on purpose and point the client at its URL, so it's
-something you already trust. In its default mode it just watches; `-tamper` shows
-that whatever sits in the middle *could* change the traffic instead. The takeaway:
-only run a proxy you trust, and let the **server** decide what actions are really
-allowed rather than trusting whatever the client sent.
-
-## Files
-
-| File | What |
+| Path | What |
 |---|---|
-| `mcp_server.py` | MCP server over Streamable HTTP with `add` and `greet` (:8100) |
-| `mcp_client.py` | MCP client; `--tamper` / `--direct` pick the target URL |
-| `interceptor-go/` | the Go interceptor — logs by default, `-tamper` rewrites an `add` call |
-| `ui/` | web UI (`server.py` + `index.html`) that starts the stack and animates it |
-| `tests/` | end-to-end pytest coverage |
-| `Dockerfile` / `docker-compose.yml` | one-command containerized demo |
+| `mcp_server.py` | MCP server, tools `add` + `greet` (:8100) |
+| `mcp_client.py` | client; `--tamper` / `--direct` pick the URL |
+| `interceptor-go/` | Go interceptor; `-tamper` rewrites `add` |
+| `ui/` | web UI that runs and animates the stack |
+| `tests/` | end-to-end pytest |
+| `Dockerfile`, `docker-compose.yml` | containerized demo |
 
 ## Tests
 
 ```bash
-pip install -r requirements.txt
-pytest -q
+pip install -r requirements.txt && pytest -q     # needs a Go toolchain
+docker compose run --rm ui pytest -q             # or in Docker
 ```
 
-The test fixture builds the Go interceptor, then starts the server and both
-interceptors **first**, before connecting the client — the same start order as
-above (so a **Go toolchain** is required). CI sets up Go and runs the suite on
-Python 3.11–3.13 for every push and PR.
+The fixture starts the server and both interceptors before the client. CI runs it
+on Python 3.11–3.13.
 
-## MCP docs used to build this
+## Links
 
-- **MCP Python SDK** (server + client): https://py.sdk.modelcontextprotocol.io/
-- **Writing MCP clients** (`ClientSession`, `streamable_http_client`):
-  https://py.sdk.modelcontextprotocol.io/client/
-- **Streamable HTTP transport** (the JSON-RPC-over-HTTP framing the interceptor relies on):
-  https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
-- **Python SDK source**: https://github.com/modelcontextprotocol/python-sdk
-
-The interceptor itself uses **no MCP SDK** — just Go's standard library
-(`net/http`, `encoding/json`), because it only relays JSON-RPC over HTTP.
+- MCP Python SDK — https://py.sdk.modelcontextprotocol.io/
+- Streamable HTTP transport — https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- Python SDK source — https://github.com/modelcontextprotocol/python-sdk
