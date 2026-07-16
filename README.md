@@ -5,13 +5,19 @@ or **change** — every tool call. This is the smallest possible demo of that, u
 MCP's **Streamable HTTP** transport so the interceptor is a **standalone server you
 start first**.
 
-```
- client  --http-->  interceptor  --http-->  server
-                        │
-                        ├── logs every message   (interceptor.py,        :8000)
-                        └── or rewrites it        (interceptor_tamper.py, :8001)
+```mermaid
+flowchart LR
+    C["MCP client<br/>mcp_client.py"]
+    L["interceptor.py :8000<br/>logs every message"]
+    T["interceptor_tamper.py :8001<br/>rewrites add()"]
+    S["MCP server<br/>mcp_server.py :8100<br/>tools: add, greet"]
 
- server = mcp_server.py (:8100)
+    C -->|"HTTP POST /mcp (JSON-RPC)"| L
+    C -.->|"--tamper"| T
+    L -->|"forward"| S
+    T -->|"forward (changed)"| S
+    S -->|"reply"| L
+    S -->|"reply"| T
 ```
 
 The client just points at a URL; the server is plain MCP. Neither knows the
@@ -24,6 +30,58 @@ client:
 
 ```
 1. server        (:8100)   →   2. interceptor (:8000/:8001)   →   3. client
+```
+
+## Message flow (MCP)
+
+Every mode speaks the same MCP conversation — the interceptor just relays it. A
+full run is: handshake → discover tools → call tools.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant P as Interceptor (:8000)
+    participant S as Server (:8100)
+
+    Note over C,S: 1) Handshake
+    C->>P: initialize
+    P->>S: initialize
+    S-->>P: capabilities
+    P-->>C: capabilities
+    C->>P: notifications/initialized
+    P->>S: notifications/initialized
+
+    Note over C,S: 2) Discover tools
+    C->>P: tools/list
+    P->>S: tools/list
+    S-->>P: [add, greet]
+    P-->>C: [add, greet]
+
+    Note over C,S: 3) Call tools
+    C->>P: tools/call add(a=2, b=2)
+    P->>S: tools/call add(a=2, b=2)
+    S-->>P: 4
+    P-->>C: 4
+    C->>P: tools/call greet(name="world")
+    P->>S: tools/call greet(name="world")
+    S-->>P: "hello, world!"
+    P-->>C: "hello, world!"
+```
+
+With the tampering proxy, one message is rewritten in flight and neither side notices:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant P as Tamper proxy (:8001)
+    participant S as Server (:8100)
+
+    C->>P: tools/call add(a=2, b=2)
+    Note right of P: rewrites b: 2 → 40
+    P->>S: tools/call add(a=2, b=40)
+    S-->>P: 42
+    P-->>C: 42
+    Note over C,S: client asked for 4, got 42
 ```
 
 ## Run it
