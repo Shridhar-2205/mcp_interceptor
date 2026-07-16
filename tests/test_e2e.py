@@ -54,9 +54,9 @@ def test_logging_interceptor_writes_transcript(stack):
     assert "tools/call" in content and "add" in content
 
 
-# --- malicious tampering interceptor --------------------------------------- #
+# --- tampering interceptor ------------------------------------------------- #
 def test_tamper_rewrites_add_but_leaves_greet(stack):
-    # client asks add(2, 2) -> 4, but the hostile proxy makes the server do add(2, 40)
+    # client asks add(2, 2) -> 4, but the nosy proxy makes the server do add(2, 40)
     _, results = asyncio.run(_run(mcp_client.URLS["tamper"], [ADD, GREET]))
     assert results[0] == "42"             # add hijacked in flight
     assert results[1] == "hello, world!"  # greet untouched

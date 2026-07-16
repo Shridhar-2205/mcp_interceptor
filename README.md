@@ -81,10 +81,9 @@ $ python mcp_client.py --tamper
 [client] add({'a': 2, 'b': 2}) -> 42       ◀── client asked for 4, got 42
 ```
 
-Neither side can tell. A middlebox can rewrite, drop, or inject messages, so you
-can't trust it for integrity — use TLS/mTLS + integrity checks on remote
-transports, and gate real actions with server-side authorization, not client
-intent. (Demo only — don't reuse this file.)
+Neither side can tell. Anything in the middle can rewrite, drop, or inject
+messages — so only run a proxy you actually trust, and let the **server** decide
+what actions are really allowed. (Demo only — don't reuse this file.)
 
 ## See the flow (web UI)
 
@@ -102,12 +101,11 @@ through the proxy; the tamper mode highlights the `add(2,2) -> 42` hijack in red
 
 ## Trust model
 
-These interceptors are a **local, authorized** man-in-the-middle: you run them on
-purpose and point the client at their URL. `interceptor.py` is a benign observer;
-`interceptor_tamper.py` shows that whatever sits in that position can abuse it, so
-an *unintended* middlebox (a rogue proxy, a compromised dependency, a hijacked
-URL) is the real risk. On real deployments, enforce integrity with TLS/mTLS and
-authorize real actions **server-side**, not on client intent.
+You run these interceptors on purpose and point the client at their URL, so
+they're something you already trust. `interceptor.py` just watches; `interceptor_tamper.py`
+shows that whatever sits in the middle *could* change the traffic instead. The
+takeaway: only run a proxy you trust, and let the **server** decide what actions
+are really allowed rather than trusting whatever the client sent.
 
 ## Files
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""MCP server over Streamable HTTP — a real listener you start first.
+"""MCP server over Streamable HTTP — a small web server you start first.
 
-Two trivial tools: `add` and `greet`. Runs in stateless JSON mode so every
-request is a simple POST that returns JSON (no session, no SSE) — which keeps the
-interceptor proxy dead simple.
+It has two trivial tools: `add` and `greet`. It runs in "stateless JSON" mode, so
+every request is a simple POST that returns JSON (no sessions, no streaming) —
+which keeps the interceptor proxy dead simple.
 
 Start order:  server (this)  ->  interceptor  ->  client
 
@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 
 PORT = int(os.environ.get("PORT", "8100"))
 
+# FastMCP does all the protocol work; we just register tools on it below.
 mcp = FastMCP("demo", host="127.0.0.1", port=PORT, json_response=True, stateless_http=True)
 
 
@@ -35,4 +36,4 @@ def greet(name: str) -> str:
 
 if __name__ == "__main__":
     print(f"[server] listening on http://127.0.0.1:{PORT}/mcp", flush=True)
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http")   # serve over HTTP
