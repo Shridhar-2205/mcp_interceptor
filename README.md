@@ -233,7 +233,7 @@ are really allowed rather than trusting whatever the client sent.
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt
 pytest -q
 ```
 
