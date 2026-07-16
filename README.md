@@ -23,6 +23,42 @@ flowchart LR
 The client just points at a URL; the server is plain MCP. Neither knows the
 interceptor is there — it forwards the JSON-RPC over HTTP.
 
+## MCP in a nutshell (and where the interceptor fits)
+
+**MCP (Model Context Protocol)** is a standard way for an app to give an AI model
+access to *tools* (functions it can call), plus resources and prompts. It has
+three roles:
+
+| Role | Who it is here | What it does |
+|---|---|---|
+| **Host** | (the app / LLM) | wants to use tools |
+| **Client** | `mcp_client.py` | opens a connection and speaks MCP for the host |
+| **Server** | `mcp_server.py` | exposes tools (`add`, `greet`) and runs them |
+
+**The messages are JSON-RPC 2.0.** Every request looks like
+`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{…}}` and every reply
+carries the same `id` back with a `result`. The methods you'll see:
+
+| MCP message | Meaning |
+|---|---|
+| `initialize` | client & server say hello and swap **capabilities** (the handshake) |
+| `notifications/initialized` | client: "handshake done, I'm ready" (a notification = no reply) |
+| `tools/list` | "what tools do you have?" → returns each tool's name + input schema |
+| `tools/call` | "run this tool with these arguments" → returns the result content |
+
+**A transport carries those JSON-RPC bytes.** MCP defines two:
+
+- **stdio** — the client *spawns* the server as a subprocess and talks over its
+  stdin/stdout. Local, 1:1, nothing to connect to.
+- **Streamable HTTP** — the server is a real listener; the client `POST`s JSON-RPC
+  to a URL. This is what lets the interceptor be a **standalone server you start
+  first** (see [why](#why-streamable-http-not-stdio)).
+
+**The interceptor sits on the transport.** Because MCP is just JSON-RPC messages
+on a pipe/socket, a proxy in the middle sees every message in the clear — so it
+can **log** them (`interceptor.py`) or **change** them (`interceptor_tamper.py`)
+without the client or server knowing. That's the whole idea of this repo.
+
 ## Start order (this is the point)
 
 Each piece is its own listener, so you bring them up **in order**, then run the
@@ -118,6 +154,24 @@ The server runs Streamable HTTP in **stateless JSON** mode, so each request is a
 plain `POST /mcp` whose body is one JSON-RPC message and whose response is one
 JSON-RPC message. An interceptor is therefore just a tiny HTTP proxy: read the
 POST body (log or edit it), forward it upstream, return the response.
+
+## Why Streamable HTTP, not stdio
+
+Both are official MCP transports, but only one lets the interceptor be a
+**standalone server you start first**:
+
+| | stdio | Streamable HTTP (used here) |
+|---|---|---|
+| Who starts whom | client **spawns** the server | each piece is its **own** server |
+| Start interceptor first | not possible (it's a child process) | yes — it listens on a port |
+| How the client targets it | a command to run | a **URL** (`http://…:8000/mcp`) |
+| Lifetime | dies with the parent | independent start/stop |
+| Multiple clients | no | yes |
+
+With stdio the proxy can only exist *because the client launched it*, so "run the
+interceptor first, then the client" is impossible. HTTP gives each piece an
+address, so you start the server, then the interceptor, then point the client at
+the interceptor's URL.
 
 ### Logging interceptor — `interceptor.py`
 
