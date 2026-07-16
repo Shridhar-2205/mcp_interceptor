@@ -22,6 +22,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,12 +44,12 @@ _TAMPER_RE = re.compile(r"\[tamper\] (\w+): (\w+) (.+?) -> (.+?) \(in flight\)")
 class Service:
     """A standalone stack process whose stdout we capture line-by-line."""
 
-    def __init__(self, script: str, port: int) -> None:
+    def __init__(self, cmd: list[str], port: int) -> None:
         self.port = port
         self.lines: list[str] = []
         self.proc = subprocess.Popen(
-            [sys.executable, os.path.join(REPO, script)],
-            env={**os.environ, "PORT": str(port)},
+            cmd,
+            env={**os.environ, "PORT": str(port), "LOG": LOG},
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
         threading.Thread(target=self._read, daemon=True).start()
@@ -88,11 +89,20 @@ def _wait_port(port: int, timeout: float = 20.0) -> None:
     raise RuntimeError(f"port {port} did not come up")
 
 
+def _build_go() -> str:
+    """Compile the Go interceptor once and return the binary path."""
+    binary = os.path.join(tempfile.gettempdir(), "mcp_interceptor_go")
+    subprocess.run(["go", "build", "-o", binary, "."],
+                   cwd=os.path.join(REPO, "interceptor-go"), check=True)
+    return binary
+
+
 def start_stack() -> None:
-    STACK["server"] = Service("mcp_server.py", 8100)
+    binary = _build_go()
+    STACK["server"] = Service([sys.executable, os.path.join(REPO, "mcp_server.py")], 8100)
     _wait_port(8100)
-    STACK["log"] = Service("interceptor.py", 8000)
-    STACK["tamper"] = Service("interceptor_tamper.py", 8001)
+    STACK["log"] = Service([binary], 8000)
+    STACK["tamper"] = Service([binary, "-tamper"], 8001)
     _wait_port(8000)
     _wait_port(8001)
 

@@ -8,8 +8,8 @@ start first**.
 ```mermaid
 flowchart LR
     C["MCP client<br/>mcp_client.py"]
-    L["interceptor.py :8000<br/>logs every message"]
-    T["interceptor_tamper.py :8001<br/>rewrites add()"]
+    L["interceptor-go :8000<br/>logs every message"]
+    T["interceptor-go -tamper :8001<br/>rewrites add()"]
     S["MCP server<br/>mcp_server.py :8100<br/>tools: add, greet"]
 
     C -->|"HTTP POST /mcp (JSON-RPC)"| L
@@ -56,8 +56,10 @@ carries the same `id` back with a `result`. The methods you'll see:
 
 **The interceptor sits on the transport.** Because MCP is just JSON-RPC messages
 on a pipe/socket, a proxy in the middle sees every message in the clear — so it
-can **log** them (`interceptor.py`) or **change** them (`interceptor_tamper.py`)
-without the client or server knowing. That's the whole idea of this repo.
+can **log** them (default) or **change** them (`-tamper`) without the client or
+server knowing. That's the whole idea of this repo. The interceptor is written in
+**Go** (no dependencies) — but since it only moves JSON over HTTP, it happily sits
+between the Python client and server.
 
 ## Start order (this is the point)
 
@@ -122,6 +124,8 @@ sequenceDiagram
 
 ## Run it
 
+Needs **Python** (client + server) and a **Go toolchain** (the interceptor).
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -129,9 +133,10 @@ pip install -r requirements.txt
 # 1) start the server (leave it running)
 python mcp_server.py
 
-# 2) start an interceptor (new terminal, leave it running)
-python interceptor.py            # LOGGING   on :8000 -> intercept.log
-python interceptor_tamper.py     # TAMPERING on :8001 (run instead / as well)
+# 2) start the Go interceptor (new terminal, leave it running)
+cd interceptor-go
+go run .                         # LOGGING   on :8000 -> intercept.log
+go run . -tamper                 # TAMPERING on :8001 (run instead / as well)
 
 # 3) run the client (new terminal)
 python mcp_client.py             # -> logging interceptor  (:8000)
@@ -153,7 +158,8 @@ two calls:
 The server runs Streamable HTTP in **stateless JSON** mode, so each request is a
 plain `POST /mcp` whose body is one JSON-RPC message and whose response is one
 JSON-RPC message. An interceptor is therefore just a tiny HTTP proxy: read the
-POST body (log or edit it), forward it upstream, return the response.
+POST body (log or edit it), forward it upstream, return the response. The Go
+version does this with only the standard library (`net/http`, `encoding/json`).
 
 ## Why Streamable HTTP, not stdio
 
@@ -173,7 +179,7 @@ interceptor first, then the client" is impossible. HTTP gives each piece an
 address, so you start the server, then the interceptor, then point the client at
 the interceptor's URL.
 
-### Logging interceptor — `interceptor.py`
+### Logging interceptor — `interceptor-go` (default)
 
 Logs each message and forwards it unchanged (full transcript in `intercept.log`):
 
@@ -182,7 +188,7 @@ Logs each message and forwards it unchanged (full transcript in `intercept.log`)
 [log] server->client: {"result":{"content":[{"type":"text","text":"4"}],...}}
 ```
 
-### ⚠️ Tamper interceptor — `interceptor_tamper.py` (security demo)
+### ⚠️ Tamper interceptor — `interceptor-go -tamper` (security demo)
 
 Does **not** forward the request unchanged — it rewrites `add`'s second argument
 in flight, so the client asks `add(2, 2)` but the server actually runs `add(2, 40)`:
@@ -195,7 +201,7 @@ $ python mcp_client.py --tamper
 
 Neither side can tell. Anything in the middle can rewrite, drop, or inject
 messages — so only run a proxy you actually trust, and let the **server** decide
-what actions are really allowed. (Demo only — don't reuse this file.)
+what actions are really allowed. (Demo only — don't reuse this mode.)
 
 ## See the flow (web UI)
 
@@ -213,11 +219,11 @@ through the proxy; the tamper mode highlights the `add(2,2) -> 42` hijack in red
 
 ## Trust model
 
-You run these interceptors on purpose and point the client at their URL, so
-they're something you already trust. `interceptor.py` just watches; `interceptor_tamper.py`
-shows that whatever sits in the middle *could* change the traffic instead. The
-takeaway: only run a proxy you trust, and let the **server** decide what actions
-are really allowed rather than trusting whatever the client sent.
+You run the interceptor on purpose and point the client at its URL, so it's
+something you already trust. In its default mode it just watches; `-tamper` shows
+that whatever sits in the middle *could* change the traffic instead. The takeaway:
+only run a proxy you trust, and let the **server** decide what actions are really
+allowed rather than trusting whatever the client sent.
 
 ## Files
 
@@ -225,8 +231,7 @@ are really allowed rather than trusting whatever the client sent.
 |---|---|
 | `mcp_server.py` | MCP server over Streamable HTTP with `add` and `greet` (:8100) |
 | `mcp_client.py` | MCP client; `--tamper` / `--direct` pick the target URL |
-| `interceptor.py` | standalone HTTP proxy that **logs** every message (:8000) |
-| `interceptor_tamper.py` | ⚠️ standalone HTTP proxy that **rewrites** an `add` call (:8001) |
+| `interceptor-go/` | the Go interceptor — logs by default, `-tamper` rewrites an `add` call |
 | `ui/` | web UI (`server.py` + `index.html`) that starts the stack and animates it |
 | `tests/` | end-to-end pytest coverage |
 
