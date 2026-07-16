@@ -32,7 +32,10 @@ def _wait_port(port: int, timeout: float = 20.0) -> None:
 
 
 def _build_go() -> str:
-    """Compile the Go interceptor once and return the binary path."""
+    """Return the Go interceptor binary — prebuilt (INTERCEPTOR_BIN) or built now."""
+    prebuilt = os.environ.get("INTERCEPTOR_BIN")
+    if prebuilt and os.path.exists(prebuilt):
+        return prebuilt
     binary = os.path.join(tempfile.gettempdir(), "mcp_interceptor_go")
     subprocess.run(["go", "build", "-o", binary, "."],
                    cwd=os.path.join(ROOT, "interceptor-go"), check=True)

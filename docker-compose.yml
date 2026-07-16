@@ -1,0 +1,12 @@
+# One self-contained service: the UI starts the MCP server + both Go interceptors
+# inside the container, so you get the whole demo with a single command.
+#
+#   docker compose up --build          # then open http://localhost:8080
+#   docker compose run --rm ui pytest -q          # run the test suite
+#   docker compose exec ui python mcp_client.py --tamper   # CLI, while UI is up
+services:
+  ui:
+    build: .
+    image: mcp-interceptor
+    ports:
+      - "8080:8080"     # the web UI (server + interceptors stay internal)

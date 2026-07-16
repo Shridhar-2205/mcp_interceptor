@@ -128,7 +128,8 @@ sequenceDiagram
 
 ## Run it
 
-Needs **Python** (client + server) and a **Go toolchain** (the interceptor).
+Needs **Python** (client + server) and a **Go toolchain** (the interceptor) — or
+skip both and use [Docker](#docker-easiest).
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -221,6 +222,24 @@ python ui/server.py        # brings up the stack, then serves the UI
 Pick **Logging**, **Tamper**, or **Direct** and watch each JSON-RPC message travel
 through the proxy; the tamper mode highlights the `add(2,2) -> 42` hijack in red.
 
+## Docker (easiest)
+
+One self-contained image runs the whole demo — the UI starts the server and both
+interceptors inside the container, so you don't need Python or Go installed. The
+Go interceptor is prebuilt in a build stage, so the runtime image is Python-only.
+
+```bash
+docker compose up --build          # then open http://localhost:8080
+```
+
+Other handy commands:
+
+```bash
+docker compose run --rm ui pytest -q                    # run the test suite
+docker compose exec ui python mcp_client.py --tamper    # CLI, while the UI is up
+docker compose down                                     # stop everything
+```
+
 ## Trust model
 
 You run the interceptor on purpose and point the client at its URL, so it's
@@ -238,6 +257,7 @@ allowed rather than trusting whatever the client sent.
 | `interceptor-go/` | the Go interceptor — logs by default, `-tamper` rewrites an `add` call |
 | `ui/` | web UI (`server.py` + `index.html`) that starts the stack and animates it |
 | `tests/` | end-to-end pytest coverage |
+| `Dockerfile` / `docker-compose.yml` | one-command containerized demo |
 
 ## Tests
 

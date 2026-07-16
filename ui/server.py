@@ -90,7 +90,10 @@ def _wait_port(port: int, timeout: float = 20.0) -> None:
 
 
 def _build_go() -> str:
-    """Compile the Go interceptor once and return the binary path."""
+    """Return the Go interceptor binary — prebuilt (INTERCEPTOR_BIN) or built now."""
+    prebuilt = os.environ.get("INTERCEPTOR_BIN")
+    if prebuilt and os.path.exists(prebuilt):
+        return prebuilt
     binary = os.path.join(tempfile.gettempdir(), "mcp_interceptor_go")
     subprocess.run(["go", "build", "-o", binary, "."],
                    cwd=os.path.join(REPO, "interceptor-go"), check=True)
@@ -213,11 +216,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    host = os.environ.get("UI_HOST", "127.0.0.1")   # set to 0.0.0.0 in Docker
     port = int(os.environ.get("UI_PORT", "8080"))
     print("Starting stack (server + interceptors)…", flush=True)
     start_stack()
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"MCP Interceptor UI -> http://127.0.0.1:{port}  (Ctrl-C to stop)", flush=True)
+    srv = ThreadingHTTPServer((host, port), Handler)
+    shown = "localhost" if host in ("0.0.0.0", "127.0.0.1") else host
+    print(f"MCP Interceptor UI -> http://{shown}:{port}  (Ctrl-C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
