@@ -66,6 +66,32 @@ can't trust it for integrity — use TLS/mTLS + integrity checks on remote
 transports, and gate real actions with server-side authorization, not client
 intent. (Demo only — don't reuse this file.)
 
+## See the flow (web UI)
+
+A tiny web UI visualizes the client → interceptor → server flow. It doesn't change
+the demo code — it just runs the existing `mcp_client.py` as a subprocess and
+animates what happens (including the tampered call).
+
+```bash
+python ui/server.py        # stdlib only, no extra deps
+# open http://127.0.0.1:8000  and pick a mode
+```
+
+Pick **Logging**, **Tamper**, or **Direct** and watch each JSON-RPC message travel
+through the proxy; the tamper mode highlights the `add(2,2) -> 42` hijack in red.
+
+## Trust model
+
+These interceptors are a **local, authorized** man-in-the-middle. On stdio the
+client itself launches the interceptor as its "server command", so the proxy runs
+**inside the trust boundary by construction** — there's no network surface and no
+auth is needed (per the MCP spec, stdio implementations use the environment, not
+the HTTP auth framework). `interceptor.py` is a benign observer; `interceptor_tamper.py`
+shows that whatever ends up in that position can abuse it, so an *unintended*
+middlebox (compromised dependency, PATH/shim hijack, malicious server wrapper) is
+the real risk — and on remote transports you must enforce integrity (TLS/mTLS) and
+authorize real actions server-side.
+
 ## Files
 
 | File | What |
@@ -74,6 +100,7 @@ intent. (Demo only — don't reuse this file.)
 | `mcp_client.py` | MCP client; `--tamper` / `--direct` pick the path |
 | `interceptor.py` | transparent proxy that **logs** every message |
 | `interceptor_tamper.py` | ⚠️ proxy that **rewrites** an `add` call in flight |
+| `ui/` | web UI (`server.py` + `index.html`) that animates the flow |
 | `tests/` | end-to-end pytest coverage |
 
 ## Tests

@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MCP Interceptor — flow</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --blue: #58a6ff; --green: #3fb950; --red: #f85149;
+    --amber: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header { padding: 22px 28px 6px; }
+  h1 { margin: 0; font-size: 20px; }
+  .sub { color: var(--muted); margin: 4px 0 0; font-size: 13px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 18px 28px 60px; }
+
+  .modes { display: flex; gap: 10px; margin: 18px 0 26px; flex-wrap: wrap; }
+  .modes button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    padding: 9px 16px; border-radius: 8px; cursor: pointer; font-size: 14px;
+    transition: border-color .15s, background .15s;
+  }
+  .modes button:hover { border-color: var(--blue); }
+  .modes button.active { border-color: var(--blue); background: #1f2a3a; }
+  .modes button.tamper.active { border-color: var(--red); background: #2a1c1c; }
+
+  /* flow diagram */
+  .stage { position: relative; height: 150px; margin: 10px 0 8px; }
+  .lane {
+    position: absolute; top: 50%; left: 8%; right: 8%; height: 2px;
+    background: var(--border); transform: translateY(-50%);
+  }
+  .nodes {
+    position: relative; display: flex; justify-content: space-between;
+    align-items: center; height: 100%; padding: 0 4%;
+  }
+  .node {
+    width: 150px; text-align: center; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px 8px;
+    z-index: 2; transition: border-color .2s, box-shadow .2s, opacity .2s;
+  }
+  .node .role { font-weight: 600; font-size: 14px; }
+  .node .file { color: var(--muted); font-size: 11px; margin-top: 3px; font-family: ui-monospace, monospace; }
+  .node.pulse { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(88,166,255,.25); }
+  .node.pulse-red { border-color: var(--red); box-shadow: 0 0 0 3px rgba(248,81,73,.3); }
+  .node.dim { opacity: .35; }
+  #ixLabel { font-size: 11px; margin-top: 4px; color: var(--amber); min-height: 14px; }
+
+  .packet {
+    position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--blue); box-shadow: 0 0 10px var(--blue);
+    transform: translate(-50%, -50%); opacity: 0; z-index: 3;
+  }
+  .packet.red { background: var(--red); box-shadow: 0 0 10px var(--red); }
+
+  /* steps */
+  .steps { display: grid; gap: 10px; margin-top: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-left: 3px solid var(--blue); border-radius: 8px; padding: 12px 14px;
+    opacity: 0; transform: translateY(6px); transition: opacity .3s, transform .3s;
+  }
+  .card.show { opacity: 1; transform: none; }
+  .card.tampered { border-left-color: var(--red); }
+  .card .call { font-family: ui-monospace, monospace; font-size: 13px; }
+  .card .arrow { color: var(--muted); }
+  .card .result { color: var(--green); font-weight: 600; }
+  .card .result.bad { color: var(--red); }
+  .badge {
+    display: inline-block; margin-left: 8px; font-size: 11px; padding: 1px 7px;
+    border-radius: 20px; background: #2a1c1c; color: var(--red); border: 1px solid var(--red);
+  }
+  .warn { margin-top: 7px; font-size: 12px; color: var(--red); }
+
+  details { margin-top: 22px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  summary { cursor: pointer; padding: 10px 14px; color: var(--muted); font-size: 13px; }
+  pre { margin: 0; padding: 0 14px 14px; overflow-x: auto; font-size: 12px; color: var(--muted); }
+  .t-row { display: flex; gap: 10px; padding: 2px 14px; font-size: 12px; font-family: ui-monospace, monospace; }
+  .t-row .dir { color: var(--muted); width: 130px; flex: none; }
+  .t-row.c2s .dir { color: var(--blue); }
+  .t-row.s2c .dir { color: var(--green); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MCP Interceptor — flow</h1>
+  <p class="sub">A proxy sits between an MCP client and server over stdio. Pick a mode to run the real demo and watch each JSON-RPC message flow through.</p>
+</header>
+
+<div class="wrap">
+  <div class="modes">
+    <button data-mode="log" class="active">Logging interceptor</button>
+    <button data-mode="tamper" class="tamper">⚠️ Tamper interceptor</button>
+    <button data-mode="direct">Direct (no interceptor)</button>
+  </div>
+
+  <div class="stage">
+    <div class="lane"></div>
+    <div class="nodes">
+      <div class="node" id="nClient"><div class="role">Client</div><div class="file">mcp_client.py</div></div>
+      <div class="node" id="nIx"><div class="role" id="ixRole">Interceptor</div><div class="file" id="ixFile">interceptor.py</div><div id="ixLabel"></div></div>
+      <div class="node" id="nServer"><div class="role">Server</div><div class="file">mcp_server.py</div></div>
+    </div>
+    <div class="packet" id="packet"></div>
+  </div>
+  <p class="hint" id="hint">Running the logging interceptor…</p>
+
+  <div class="steps" id="steps"></div>
+
+  <details id="ixBox">
+    <summary>Interceptor output (stderr)</summary>
+    <pre id="ixOut"></pre>
+  </details>
+
+  <details id="wireBox">
+    <summary>Full wire transcript (intercept.log)</summary>
+    <div id="wire"></div>
+  </details>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let running = false;
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function centerX(el) {
+  const s = $("packet").parentElement.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  return r.left + r.width / 2 - s.left;
+}
+function midY() {
+  const s = $("packet").parentElement.getBoundingClientRect();
+  return s.height / 2;
+}
+
+async function move(fromEl, toEl, red) {
+  const p = $("packet");
+  p.classList.toggle("red", !!red);
+  const y = midY();
+  const a = p.animate(
+    [{ left: centerX(fromEl) + "px", top: y + "px", opacity: 1 },
+     { left: centerX(toEl) + "px", top: y + "px", opacity: 1 }],
+    { duration: 620, easing: "ease-in-out", fill: "forwards" }
+  );
+  await a.finished;
+}
+
+function pulse(el, red) {
+  el.classList.add(red ? "pulse-red" : "pulse");
+  setTimeout(() => el.classList.remove("pulse", "pulse-red"), 450);
+}
+
+async function animateStep(step, hasIx) {
+  const C = $("nClient"), I = $("nIx"), S = $("nServer");
+  const p = $("packet");
+  // request leg: client -> (interceptor) -> server
+  pulse(C);
+  if (hasIx) {
+    await move(C, I, step.tampered);
+    pulse(I, step.tampered);
+    if (step.tampered) {
+      $("ixLabel").textContent = `${step.tamper.arg}: ${step.tamper.from} → ${step.tamper.to}`;
+    }
+    await move(I, S, step.tampered);
+  } else {
+    await move(C, S, false);
+  }
+  pulse(S);
+  // response leg: server -> (interceptor) -> client
+  if (hasIx) {
+    await move(S, I, false);
+    pulse(I);
+    await move(I, C, false);
+  } else {
+    await move(S, C, false);
+  }
+  pulse(C);
+  p.style.opacity = 0;
+  $("ixLabel").textContent = "";
+}
+
+function renderCard(step) {
+  const div = document.createElement("div");
+  div.className = "card" + (step.tampered ? " tampered" : "");
+  const args = JSON.stringify(step.args);
+  div.innerHTML =
+    `<div class="call">${step.tool}(${args}) <span class="arrow">→</span> ` +
+    `<span class="result ${step.tampered ? "bad" : ""}">${step.result}</span>` +
+    (step.tampered ? `<span class="badge">tampered</span>` : ``) + `</div>` +
+    (step.tampered
+      ? `<div class="warn">client sent ${step.tamper.arg}=${step.tamper.from}, but the proxy made the server use ${step.tamper.arg}=${step.tamper.to}</div>`
+      : ``);
+  $("steps").appendChild(div);
+  requestAnimationFrame(() => div.classList.add("show"));
+}
+
+function setupNodes(mode) {
+  const I = $("nIx");
+  if (mode === "direct") {
+    I.classList.add("dim");
+    $("ixRole").textContent = "no interceptor";
+    $("ixFile").textContent = "—";
+  } else {
+    I.classList.remove("dim");
+    $("ixRole").textContent = mode === "tamper" ? "Tampering proxy" : "Logging proxy";
+    $("ixFile").textContent = mode === "tamper" ? "interceptor_tamper.py" : "interceptor.py";
+  }
+}
+
+async function run(mode) {
+  if (running) return;
+  running = true;
+  document.querySelectorAll(".modes button").forEach(b =>
+    b.classList.toggle("active", b.dataset.mode === mode));
+  $("steps").innerHTML = "";
+  $("ixOut").textContent = "";
+  $("wire").innerHTML = "";
+  $("ixLabel").textContent = "";
+  setupNodes(mode);
+  $("hint").textContent = "Running…";
+
+  let data;
+  try {
+    const res = await fetch("/api/run?mode=" + encodeURIComponent(mode));
+    data = await res.json();
+  } catch (e) {
+    $("hint").textContent = "Failed to reach backend: " + e;
+    running = false;
+    return;
+  }
+
+  const hasIx = mode !== "direct";
+  const label = { log: "Logging interceptor", tamper: "Tamper interceptor", direct: "Direct (no interceptor)" }[mode];
+  $("hint").textContent = `${label} · tools: ${JSON.stringify(data.tools)}`;
+
+  for (const step of data.steps) {
+    await animateStep(step, hasIx);
+    renderCard(step);
+    await sleep(250);
+  }
+
+  // side panels
+  $("ixBox").style.display = data.interceptor.length ? "" : "none";
+  $("ixOut").textContent = data.interceptor.join("\n");
+  if (data.transcript.length) {
+    $("wireBox").style.display = "";
+    for (const t of data.transcript) {
+      const row = document.createElement("div");
+      const cls = t.direction.includes("client->server") ? "c2s" : "s2c";
+      row.className = "t-row " + cls;
+      row.innerHTML = `<span class="dir">${t.direction}</span><span>${t.summary}</span>`;
+      $("wire").appendChild(row);
+    }
+  } else {
+    $("wireBox").style.display = "none";
+  }
+
+  running = false;
+}
+
+document.querySelectorAll(".modes button").forEach(b =>
+  b.addEventListener("click", () => run(b.dataset.mode)));
+
+run("log");
+</script>
+</body>
+</html>

@@ -15,6 +15,13 @@ actions with server-side authorization — never on client intent alone.
     client  <--stdio-->  interceptor_tamper.py  <--stdio-->  mcp_server.py
                               (rewrites the request)
 
+Trust model: same *in-position* proxy as interceptor.py — on stdio no auth is
+needed to sit here, because the client launched it. This file shows why that
+position must still be trustworthy: anything that lands in the middle (a
+compromised dependency, a PATH/shim hijack, or a malicious server wrapper) can
+silently rewrite traffic. On remote transports, enforce integrity (TLS/mTLS) and
+authorize real actions server-side rather than trusting client intent.
+
 Spec: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
 """
 

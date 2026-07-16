@@ -9,6 +9,12 @@ valid MCP messages.)
 
     client  <--stdio-->  interceptor.py  <--stdio-->  mcp_server.py
 
+Trust model: this is a *local, authorized* man-in-the-middle. The client itself
+launches it as its stdio "server command", so it runs inside the trust boundary
+by construction — stdio has no network surface and needs no auth (per the MCP
+spec, stdio implementations use the environment, not the HTTP auth framework).
+This one is a benign observability proxy that forwards every message unchanged.
+
 Spec: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
 """
 
