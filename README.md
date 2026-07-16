@@ -1,25 +1,30 @@
 # MCP Interceptor
 
 Put a proxy between an **MCP client** and an **MCP server** and you can **see** —
-or **change** — every tool call. This is the smallest possible demo of that.
+or **change** — every tool call. This is the smallest possible demo of that, using
+MCP's **Streamable HTTP** transport so the interceptor is a **standalone server you
+start first**.
 
 ```
- client  <--stdio-->  interceptor  <--stdio-->  server
-                          │
-                          └── logs every message   (interceptor.py)
-                          └── or rewrites it        (interceptor_tamper.py)
+ client  --http-->  interceptor  --http-->  server
+                        │
+                        ├── logs every message   (interceptor.py,        :8000)
+                        └── or rewrites it        (interceptor_tamper.py, :8001)
+
+ server = mcp_server.py (:8100)
 ```
 
-The client and server are plain MCP and **don't know the interceptor is there** —
-it just forwards bytes on the standard streams.
+The client just points at a URL; the server is plain MCP. Neither knows the
+interceptor is there — it forwards the JSON-RPC over HTTP.
 
-## Why it's this simple
+## Start order (this is the point)
 
-MCP's **stdio transport** is newline-delimited JSON-RPC: the client launches the
-server as a subprocess and they exchange **one JSON message per line** over
-stdin/stdout. So an interceptor is just: launch the real server, and pump lines
-in both directions (logging or editing them on the way). `stderr` is free for
-logging; `stdout` must only carry valid MCP messages.
+Each piece is its own listener, so you bring them up **in order**, then run the
+client:
+
+```
+1. server        (:8100)   →   2. interceptor (:8000/:8001)   →   3. client
+```
 
 ## Run it
 
@@ -27,9 +32,17 @@ logging; `stdout` must only carry valid MCP messages.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python mcp_client.py            # through the LOGGING interceptor  -> intercept.log
-python mcp_client.py --tamper   # through the TAMPERING interceptor -> rewrites a call
-python mcp_client.py --direct   # no interceptor (baseline)
+# 1) start the server (leave it running)
+python mcp_server.py
+
+# 2) start an interceptor (new terminal, leave it running)
+python interceptor.py            # LOGGING   on :8000 -> intercept.log
+python interceptor_tamper.py     # TAMPERING on :8001 (run instead / as well)
+
+# 3) run the client (new terminal)
+python mcp_client.py             # -> logging interceptor  (:8000)
+python mcp_client.py --tamper    # -> tampering interceptor (:8001)
+python mcp_client.py --direct    # -> server directly       (:8100, no interceptor)
 ```
 
 The server has two trivial tools, `add` and `greet`. Every mode makes the same
@@ -40,6 +53,13 @@ two calls:
 [client] add({'a': 2, 'b': 2}) -> 4
 [client] greet({'name': 'world'}) -> hello, world!
 ```
+
+## Why it's this simple
+
+The server runs Streamable HTTP in **stateless JSON** mode, so each request is a
+plain `POST /mcp` whose body is one JSON-RPC message and whose response is one
+JSON-RPC message. An interceptor is therefore just a tiny HTTP proxy: read the
+POST body (log or edit it), forward it upstream, return the response.
 
 ### Logging interceptor — `interceptor.py`
 
@@ -68,13 +88,13 @@ intent. (Demo only — don't reuse this file.)
 
 ## See the flow (web UI)
 
-A tiny web UI visualizes the client → interceptor → server flow. It doesn't change
-the demo code — it just runs the existing `mcp_client.py` as a subprocess and
-animates what happens (including the tampered call).
+A tiny web UI **starts the whole stack for you** (server + both interceptors),
+then runs the existing `mcp_client.py` against the mode you pick and animates the
+client → interceptor → server flow. It doesn't change the demo code.
 
 ```bash
-python ui/server.py        # stdlib only, no extra deps
-# open http://127.0.0.1:8000  and pick a mode
+python ui/server.py        # brings up the stack, then serves the UI
+# open http://127.0.0.1:8080  and pick a mode
 ```
 
 Pick **Logging**, **Tamper**, or **Direct** and watch each JSON-RPC message travel
@@ -82,25 +102,22 @@ through the proxy; the tamper mode highlights the `add(2,2) -> 42` hijack in red
 
 ## Trust model
 
-These interceptors are a **local, authorized** man-in-the-middle. On stdio the
-client itself launches the interceptor as its "server command", so the proxy runs
-**inside the trust boundary by construction** — there's no network surface and no
-auth is needed (per the MCP spec, stdio implementations use the environment, not
-the HTTP auth framework). `interceptor.py` is a benign observer; `interceptor_tamper.py`
-shows that whatever ends up in that position can abuse it, so an *unintended*
-middlebox (compromised dependency, PATH/shim hijack, malicious server wrapper) is
-the real risk — and on remote transports you must enforce integrity (TLS/mTLS) and
-authorize real actions server-side.
+These interceptors are a **local, authorized** man-in-the-middle: you run them on
+purpose and point the client at their URL. `interceptor.py` is a benign observer;
+`interceptor_tamper.py` shows that whatever sits in that position can abuse it, so
+an *unintended* middlebox (a rogue proxy, a compromised dependency, a hijacked
+URL) is the real risk. On real deployments, enforce integrity with TLS/mTLS and
+authorize real actions **server-side**, not on client intent.
 
 ## Files
 
 | File | What |
 |---|---|
-| `mcp_server.py` | MCP server (stdio) with `add` and `greet` |
-| `mcp_client.py` | MCP client; `--tamper` / `--direct` pick the path |
-| `interceptor.py` | transparent proxy that **logs** every message |
-| `interceptor_tamper.py` | ⚠️ proxy that **rewrites** an `add` call in flight |
-| `ui/` | web UI (`server.py` + `index.html`) that animates the flow |
+| `mcp_server.py` | MCP server over Streamable HTTP with `add` and `greet` (:8100) |
+| `mcp_client.py` | MCP client; `--tamper` / `--direct` pick the target URL |
+| `interceptor.py` | standalone HTTP proxy that **logs** every message (:8000) |
+| `interceptor_tamper.py` | ⚠️ standalone HTTP proxy that **rewrites** an `add` call (:8001) |
+| `ui/` | web UI (`server.py` + `index.html`) that starts the stack and animates it |
 | `tests/` | end-to-end pytest coverage |
 
 ## Tests
@@ -110,13 +127,15 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-CI runs the suite on Python 3.11–3.13 for every push and PR.
+The test fixture starts the server and both interceptors **first**, then connects
+the client — the same start order as above. CI runs the suite on Python 3.11–3.13
+for every push and PR.
 
 ## MCP docs used to build this
 
 - **MCP Python SDK** (server + client): https://py.sdk.modelcontextprotocol.io/
-- **Writing MCP clients** (`ClientSession`, `stdio_client`, `StdioServerParameters`):
+- **Writing MCP clients** (`ClientSession`, `streamable_http_client`):
   https://py.sdk.modelcontextprotocol.io/client/
-- **stdio transport** (the newline-delimited JSON-RPC framing the interceptor relies on):
+- **Streamable HTTP transport** (the JSON-RPC-over-HTTP framing the interceptor relies on):
   https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
 - **Python SDK source**: https://github.com/modelcontextprotocol/python-sdk

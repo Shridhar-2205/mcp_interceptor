@@ -1,59 +1,71 @@
 #!/usr/bin/env python3
-"""A transparent MCP interceptor: sit between client and server and LOG every
-message, forwarding each one unchanged.
+"""Standalone MCP interceptor — a real HTTP listener you start FIRST.
 
-Why this is so simple: MCP's stdio transport is newline-delimited JSON-RPC — one
-message per line over the server's stdin/stdout. So a proxy just pumps lines both
-ways. (stderr is free for logging; stdout is the live channel and must only carry
-valid MCP messages.)
+It sits between the client and the upstream server on the Streamable-HTTP
+transport, forwarding every JSON-RPC message and LOGGING it (to stderr and
+intercept.log). Start order:  server  ->  interceptor (this)  ->  client.
 
-    client  <--stdio-->  interceptor.py  <--stdio-->  mcp_server.py
+    client --http--> interceptor.py (:8000) --http--> mcp_server.py (:8100)
 
-Trust model: this is a *local, authorized* man-in-the-middle. The client itself
-launches it as its stdio "server command", so it runs inside the trust boundary
-by construction — stdio has no network surface and needs no auth (per the MCP
-spec, stdio implementations use the environment, not the HTTP auth framework).
-This one is a benign observability proxy that forwards every message unchanged.
+Trust model: this is a *local, authorized* man-in-the-middle — you run it on
+purpose and point the client at it. It's a benign observer that forwards every
+message unchanged. (See interceptor_tamper.py for what a hostile one could do.)
 
-Spec: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+Docs: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
-import threading
+
+import httpx
+import uvicorn
+from starlette.applications import Starlette
+from starlette.responses import Response
+from starlette.routing import Route
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "intercept.log")
-_lock = threading.Lock()
+
+PORT = int(os.environ.get("PORT", "8000"))
+UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8100/mcp")
 
 
-def pump(src, dst, label: str) -> None:
-    """Forward each newline-delimited message from src to dst, logging it."""
-    for line in iter(src.readline, b""):
-        text = line.decode("utf-8", "replace").rstrip("\n")
-        with _lock:
-            sys.stderr.write(f"[log] {label}: {text}\n")
-            sys.stderr.flush()
-            with open(LOG, "a", encoding="utf-8") as f:
-                f.write(f"{label}: {text}\n")
-        dst.write(line)
-        dst.flush()
-    dst.close()
+def log(direction: str, body: bytes) -> None:
+    text = body.decode("utf-8", "replace").strip()
+    if not text:
+        return
+    print(f"[log] {direction}: {text[:200]}", flush=True)
+    with open(LOG, "a", encoding="utf-8") as f:
+        f.write(f"{direction}: {text}\n")
 
 
-def main() -> int:
-    server = sys.argv[1:] or [sys.executable, os.path.join(HERE, "mcp_server.py")]
-    sys.stderr.write(f"[log] proxying to: {' '.join(server)}  (transcript -> {LOG})\n")
-    sys.stderr.flush()
+def transform(body: bytes) -> bytes:
+    """Logging proxy forwards the request unchanged."""
+    return body
 
-    proc = subprocess.Popen(server, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-    threading.Thread(target=pump, args=(sys.stdin.buffer, proc.stdin, "client->server"), daemon=True).start()
-    threading.Thread(target=pump, args=(proc.stdout, sys.stdout.buffer, "server->client"), daemon=True).start()
-    return proc.wait()
+
+async def proxy(request):
+    body = transform(await request.body())
+    log("client->server", body)
+
+    headers = {k: v for k, v in request.headers.items()
+               if k.lower() not in ("host", "content-length")}
+    async with httpx.AsyncClient(timeout=30) as client:
+        upstream = await client.request(
+            request.method, UPSTREAM, content=body,
+            headers=headers, params=dict(request.query_params),
+        )
+
+    log("server->client", upstream.content)
+    resp_headers = {k: v for k, v in upstream.headers.items()
+                    if k.lower() not in ("content-length", "transfer-encoding", "connection")}
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=resp_headers)
+
+
+app = Starlette(routes=[Route("/mcp", proxy, methods=["GET", "POST", "DELETE"])])
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    print(f"[log] interceptor on http://127.0.0.1:{PORT}/mcp -> {UPSTREAM}", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

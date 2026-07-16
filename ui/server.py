@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Tiny web UI backend that showcases the MCP interceptor flow.
+"""Web UI that showcases the standalone MCP interceptor flow.
 
-It does NOT modify the demo code. It simply runs the existing `mcp_client.py`
-(which launches `interceptor.py` / `interceptor_tamper.py` and the server) as a
-subprocess, then parses stdout/stderr/intercept.log into JSON for the browser.
+It brings the stack UP FIRST — starts the server (:8100), the logging interceptor
+(:8000), and the tampering interceptor (:8001) as standalone listeners — then, on
+each request, runs the existing `mcp_client.py` against the chosen one and parses
+the flow into JSON. It does NOT modify the demo code.
 
 Run:
-    python ui/server.py            # then open http://127.0.0.1:8000
+    python ui/server.py            # then open http://127.0.0.1:8080
 
-Security: binds to localhost only; the `mode` query param is validated against a
-fixed allow-list, so nothing user-supplied ever reaches the subprocess command.
+Security: the UI and stack bind to localhost only; the `mode` query param is
+validated against a fixed allow-list before any subprocess is launched.
 """
 
 from __future__ import annotations
@@ -18,8 +19,11 @@ import ast
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -29,7 +33,6 @@ CLIENT = os.path.join(REPO, "mcp_client.py")
 LOG = os.path.join(REPO, "intercept.log")
 INDEX = os.path.join(HERE, "index.html")
 
-# allow-list: maps a UI mode to the flags passed to the real client
 MODE_FLAG = {"log": [], "tamper": ["--tamper"], "direct": ["--direct"]}
 
 _CALL_RE = re.compile(r"\[client\] (\w+)\((.*)\) -> (.*)")
@@ -37,17 +40,79 @@ _TOOLS_RE = re.compile(r"\[client\] tools: (\[.*\])")
 _TAMPER_RE = re.compile(r"\[tamper\] (\w+): (\w+) (.+?) -> (.+?) \(in flight\)")
 
 
+class Service:
+    """A standalone stack process whose stdout we capture line-by-line."""
+
+    def __init__(self, script: str, port: int) -> None:
+        self.port = port
+        self.lines: list[str] = []
+        self.proc = subprocess.Popen(
+            [sys.executable, os.path.join(REPO, script)],
+            env={**os.environ, "PORT": str(port)},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        )
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        assert self.proc.stdout
+        for line in self.proc.stdout:
+            self.lines.append(line.rstrip("\n"))
+
+    def mark(self) -> int:
+        return len(self.lines)
+
+    def since(self, n: int) -> list[str]:
+        return self.lines[n:]
+
+    def stop(self) -> None:
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except Exception:
+            self.proc.kill()
+
+
+STACK: dict[str, Service] = {}
+
+
+def _wait_port(port: int, timeout: float = 20.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket() as s:
+            s.settimeout(0.5)
+            try:
+                s.connect(("127.0.0.1", port))
+                return
+            except OSError:
+                time.sleep(0.1)
+    raise RuntimeError(f"port {port} did not come up")
+
+
+def start_stack() -> None:
+    STACK["server"] = Service("mcp_server.py", 8100)
+    _wait_port(8100)
+    STACK["log"] = Service("interceptor.py", 8000)
+    STACK["tamper"] = Service("interceptor_tamper.py", 8001)
+    _wait_port(8000)
+    _wait_port(8001)
+
+
+def stop_stack() -> None:
+    for svc in STACK.values():
+        svc.stop()
+
+
 def run_mode(mode: str) -> dict:
-    """Run the existing client once in the given mode and parse the flow."""
-    flag = MODE_FLAG[mode]
-    if os.path.exists(LOG):
+    interceptor = STACK.get(mode) if mode in ("log", "tamper") else None
+    mark = interceptor.mark() if interceptor else 0
+    if mode == "log" and os.path.exists(LOG):
         os.remove(LOG)
 
     proc = subprocess.run(
-        [sys.executable, CLIENT, *flag],
+        [sys.executable, CLIENT, *MODE_FLAG[mode]],
         cwd=REPO, capture_output=True, text=True, timeout=60,
     )
-    stdout, stderr = proc.stdout, proc.stderr
+    stdout = proc.stdout
 
     tools: list = []
     m = _TOOLS_RE.search(stdout)
@@ -57,13 +122,12 @@ def run_mode(mode: str) -> dict:
         except Exception:
             tools = []
 
-    # what the interceptor changed, keyed by tool name
-    tampered: dict[str, dict] = {}
-    for tm in _TAMPER_RE.finditer(stderr):
+    interceptor_lines = interceptor.since(mark) if interceptor else []
+    tampered = {}
+    for tm in _TAMPER_RE.finditer("\n".join(interceptor_lines)):
         tool, arg, frm, to = tm.groups()
         tampered[tool] = {"arg": arg, "from": frm, "to": to}
 
-    # client-visible calls (request args + returned result)
     steps = []
     for cm in _CALL_RE.finditer(stdout):
         tool, args_s, result = cm.groups()
@@ -72,16 +136,12 @@ def run_mode(mode: str) -> dict:
         except Exception:
             args = args_s
         steps.append({
-            "tool": tool,
-            "args": args,
-            "result": result,
-            "tampered": tool in tampered,
-            "tamper": tampered.get(tool),
+            "tool": tool, "args": args, "result": result,
+            "tampered": tool in tampered, "tamper": tampered.get(tool),
         })
 
-    # full wire transcript (only the logging interceptor writes the file)
     transcript = []
-    if os.path.exists(LOG):
+    if mode == "log" and os.path.exists(LOG):
         for line in open(LOG, encoding="utf-8"):
             line = line.rstrip("\n")
             if ": " not in line:
@@ -97,8 +157,6 @@ def run_mode(mode: str) -> dict:
                         summary += f"  ({params['name']})"
                 elif "result" in msg:
                     summary = "result"
-                elif "error" in msg:
-                    summary = "error"
             except Exception:
                 pass
             transcript.append({"direction": direction, "summary": summary, "raw": raw})
@@ -108,8 +166,7 @@ def run_mode(mode: str) -> dict:
         "tools": tools,
         "steps": steps,
         "transcript": transcript,
-        # only the interceptor's own lines ([log]/[tamper]); skip the server's stderr
-        "interceptor": [ln for ln in stderr.splitlines() if ln.strip().startswith("[")],
+        "interceptor": [ln for ln in interceptor_lines if ln.strip()],
         "returncode": proc.returncode,
     }
 
@@ -141,18 +198,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(404, b"not found", "text/plain; charset=utf-8")
 
-    def log_message(self, *args) -> None:  # keep the console quiet
+    def log_message(self, *args) -> None:
         pass
 
 
 def main() -> None:
-    port = int(os.environ.get("PORT", "8000"))
+    port = int(os.environ.get("UI_PORT", "8080"))
+    print("Starting stack (server + interceptors)…", flush=True)
+    start_stack()
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"MCP Interceptor UI -> http://127.0.0.1:{port}  (Ctrl-C to stop)")
+    print(f"MCP Interceptor UI -> http://127.0.0.1:{port}  (Ctrl-C to stop)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
+        pass
+    finally:
         srv.shutdown()
+        stop_stack()
 
 
 if __name__ == "__main__":

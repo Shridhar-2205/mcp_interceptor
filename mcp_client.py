@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""A tiny MCP client. Talks to the server directly, or through an interceptor.
+"""MCP client over Streamable HTTP. Connects to a URL — by default the
+interceptor. Start the server and an interceptor FIRST, then run this.
 
-Built with the official MCP Python SDK. Client docs:
-https://py.sdk.modelcontextprotocol.io/client/
+    python mcp_client.py            # -> logging interceptor  (127.0.0.1:8000)
+    python mcp_client.py --tamper   # -> tampering interceptor (127.0.0.1:8001)
+    python mcp_client.py --direct   # -> server directly       (127.0.0.1:8100)
 
-    python mcp_client.py            # through the logging interceptor
-    python mcp_client.py --tamper   # through the tampering interceptor
-    python mcp_client.py --direct   # straight to the server (no interceptor)
+Override the target with the MCP_URL env var if you use different ports.
+
+Client docs: https://py.sdk.modelcontextprotocol.io/client/
 """
 
 from __future__ import annotations
@@ -15,23 +17,14 @@ import asyncio
 import os
 import sys
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-def _server_params(mode: str) -> StdioServerParameters:
-    """What the client launches. For interceptor modes, the client launches the
-    interceptor and the interceptor launches the real server."""
-    server = os.path.join(HERE, "mcp_server.py")
-    if mode == "direct":
-        return StdioServerParameters(command=sys.executable, args=[server])
-    interceptor = "interceptor_tamper.py" if mode == "tamper" else "interceptor.py"
-    return StdioServerParameters(
-        command=sys.executable,
-        args=[os.path.join(HERE, interceptor), sys.executable, server],
-    )
+URLS = {
+    "log": "http://127.0.0.1:8000/mcp",
+    "tamper": "http://127.0.0.1:8001/mcp",
+    "direct": "http://127.0.0.1:8100/mcp",
+}
 
 
 def _text(result) -> str:
@@ -40,9 +33,10 @@ def _text(result) -> str:
 
 async def main() -> None:
     mode = "direct" if "--direct" in sys.argv else "tamper" if "--tamper" in sys.argv else "log"
-    print(f"[client] mode: {mode}\n")
+    url = os.environ.get("MCP_URL", URLS[mode])
+    print(f"[client] mode: {mode} -> {url}\n")
 
-    async with stdio_client(_server_params(mode)) as (read, write):
+    async with streamable_http_client(url) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
 

@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""A tiny MCP server with two trivial tools: `add` and `greet`.
+"""MCP server over Streamable HTTP — a real listener you start first.
 
-Built with the official MCP Python SDK (FastMCP), which serves over the stdio
-transport by default.
+Two trivial tools: `add` and `greet`. Runs in stateless JSON mode so every
+request is a simple POST that returns JSON (no session, no SSE) — which keeps the
+interceptor proxy dead simple.
+
+Start order:  server (this)  ->  interceptor  ->  client
 
 Docs used to build this:
-- MCP Python SDK:       https://py.sdk.modelcontextprotocol.io/
-- stdio transport spec: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- MCP Python SDK:                 https://py.sdk.modelcontextprotocol.io/
+- Streamable HTTP transport spec: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
 """
+
+import os
 
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("demo")
+PORT = int(os.environ.get("PORT", "8100"))
+
+mcp = FastMCP("demo", host="127.0.0.1", port=PORT, json_response=True, stateless_http=True)
 
 
 @mcp.tool()
@@ -27,4 +34,5 @@ def greet(name: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()  # stdio transport by default
+    print(f"[server] listening on http://127.0.0.1:{PORT}/mcp", flush=True)
+    mcp.run(transport="streamable-http")
