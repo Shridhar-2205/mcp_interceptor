@@ -149,6 +149,20 @@ python mcp_client.py --tamper    # -> tampering interceptor (:8001)
 python mcp_client.py --direct    # -> server directly       (:8100, no interceptor)
 ```
 
+**Each piece is fully independent** — separate processes on their own ports, in
+any language. Start or stop any of them on their own: run the server alone and hit
+it with `--direct` (no interceptor needed), or restart the interceptor without
+touching the server. The Go interceptor can also be built once and run as a plain
+binary instead of `go run`:
+
+```bash
+cd interceptor-go && go build -o interceptor .
+PORT=8000 ./interceptor            # logging
+PORT=8001 ./interceptor -tamper    # tampering
+# override the upstream too, e.g. a server on another host/port:
+UPSTREAM=http://127.0.0.1:8100/mcp ./interceptor
+```
+
 The server has two trivial tools, `add` and `greet`. Every mode makes the same
 two calls:
 
